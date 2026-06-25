@@ -1,0 +1,50 @@
+#!/bin/bash
+# Applies Sloppinux branding to all generated bootloader configs.
+# Binary hooks run after the filesystem is assembled; binary/ is the ISO tree.
+set -euo pipefail
+
+# ── Text replacement ─────────────────────────────────────────────────────────
+# Patch every bootloader config file we can find.
+while IFS= read -r -d '' cfg; do
+    sed -i \
+        -e 's/Debian GNU\/Linux/Sloppinux/gi' \
+        -e 's/Debian Live/Sloppinux Live/gi' \
+        -e 's/Start Debian/Start Sloppinux/gi' \
+        "$cfg"
+done < <(find binary/boot binary/isolinux binary/EFI \
+              -type f \( -name "*.cfg" -o -name "*.conf" -o -name "*.lst" \) \
+              -print0 2>/dev/null)
+
+# ── GRUB terminal colors (logo palette) ──────────────────────────────────────
+# Inject color vars before the first menuentry so they apply to the whole menu.
+for cfg in binary/boot/grub/grub.cfg binary/boot/grub/grub-efi.cfg; do
+    [[ -f "$cfg" ]] || continue
+    # Skip if already patched
+    grep -q "sloppinux_colors" "$cfg" && continue
+    read -r -d '' COLOR_BLOCK <<'GRUBEOF' || true
+# sloppinux_colors
+set color_normal=light-cyan/black
+set color_highlight=black/light-cyan
+set menu_color_normal=light-cyan/black
+set menu_color_highlight=black/light-cyan
+GRUBEOF
+    # Insert after the first 'set default' line
+    sed -i "/^set default=/a\\${COLOR_BLOCK}" "$cfg"
+done
+
+# ── GRUB splash background ───────────────────────────────────────────────────
+# Convert the wallpaper SVG to a 1280×800 PNG for the GRUB splash.
+SPLASH_DIR="binary/boot/grub"
+WALLPAPER_SVG="config/includes.chroot/usr/share/backgrounds/sloppinux/wallpaper.svg"
+
+if command -v rsvg-convert &>/dev/null && [[ -f "$WALLPAPER_SVG" ]]; then
+    mkdir -p "$SPLASH_DIR"
+    rsvg-convert -w 1280 -h 800 "$WALLPAPER_SVG" -o "$SPLASH_DIR/splash.png"
+    for cfg in binary/boot/grub/grub.cfg binary/boot/grub/grub-efi.cfg; do
+        [[ -f "$cfg" ]] || continue
+        grep -q "splash.png" "$cfg" && continue
+        sed -i "1i insmod png\nbackground_image /boot/grub/splash.png\n" "$cfg"
+    done
+fi
+
+echo "==> Bootloader branding applied"

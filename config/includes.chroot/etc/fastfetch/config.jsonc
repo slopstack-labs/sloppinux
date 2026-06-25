@@ -1,0 +1,32 @@
+{
+  "logo": {
+    "type": "file",
+    "source": "/etc/fastfetch/sloppinux.txt",
+    "colors": ["36", "105", "61"],
+    "padding": { "top": 1, "left": 2 },
+    "printRemaining": true
+  },
+  "display": {
+    "separator": "  ",
+    "color": { "keys": "36", "title": "105" }
+  },
+  "modules": [
+    { "type": "title",    "format": "{user}@{hostname}" },
+    "separator",
+    { "type": "os",       "key": "OS" },
+    { "type": "kernel",   "key": "Kernel" },
+    { "type": "uptime",   "key": "Uptime" },
+    { "type": "packages", "key": "Packages" },
+    { "type": "shell",    "key": "Shell" },
+    { "type": "de",       "key": "DE" },
+    { "type": "wm",       "key": "WM" },
+    { "type": "terminal", "key": "Terminal" },
+    "separator",
+    { "type": "cpu",      "key": "CPU" },
+    { "type": "gpu",      "key": "GPU",    "detectionMethod": "auto" },
+    { "type": "memory",   "key": "Memory" },
+    { "type": "disk",     "key": "Disk",   "folders": "/" },
+    "separator",
+    { "type": "colors",   "paddingLeft": 2, "block": { "width": 3 } }
+  ]
+}

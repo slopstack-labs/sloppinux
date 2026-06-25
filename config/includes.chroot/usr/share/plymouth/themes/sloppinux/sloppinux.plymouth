@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=Sloppinux
+Description=Sloppinux boot splash
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/sloppinux
+ScriptFile=/usr/share/plymouth/themes/sloppinux/sloppinux.script

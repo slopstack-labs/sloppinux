@@ -1,0 +1,24 @@
+screen_width  = Window.GetWidth();
+screen_height = Window.GetHeight();
+
+# Dark background
+bg = Sprite();
+bg.SetImage(Image.Fill(screen_width, screen_height, 0.03, 0.01, 0.09, 1)); /* #080318 */
+bg.SetZOrder(0);
+
+# Centered logo
+logo_image = Image("logo.png");
+logo_scale = 0.25;
+logo_w = logo_image.GetWidth()  * logo_scale;
+logo_h = logo_image.GetHeight() * logo_scale;
+logo = Sprite(logo_image.Scale(logo_w, logo_h));
+logo.SetX(screen_width  / 2 - logo_w / 2);
+logo.SetY(screen_height / 2 - logo_h / 2 - 40);
+logo.SetZOrder(1);
+
+# "sloppinux" label
+label = Image.Text("sloppinux", 1, 1, 1, 1, "Sans 18");
+label_sprite = Sprite(label);
+label_sprite.SetX(screen_width  / 2 - label.GetWidth()  / 2);
+label_sprite.SetY(screen_height / 2 + logo_h / 2 - 20);
+label_sprite.SetZOrder(1);

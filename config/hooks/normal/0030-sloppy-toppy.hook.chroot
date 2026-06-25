@@ -1,0 +1,9 @@
+#!/bin/bash
+# Downloads the sloppy-toppy pre-built binary from the GitHub release.
+set -euo pipefail
+
+RELEASE_URL="https://github.com/slopstack-labs/sloppy-toppy/releases/download/v0.1.0-agentic-alignment-alpha.1/sloppy-toppy-linux-x86_64"
+
+echo "==> Downloading sloppy-toppy"
+curl -fsSL "$RELEASE_URL" -o /usr/local/bin/sloppy-toppy
+chmod +x /usr/local/bin/sloppy-toppy

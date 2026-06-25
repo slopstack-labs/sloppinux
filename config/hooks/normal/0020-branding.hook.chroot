@@ -1,0 +1,58 @@
+#!/bin/bash
+set -euo pipefail
+
+# OS identity
+cat > /etc/os-release <<'EOF'
+PRETTY_NAME="Sloppinux 1.0 (Trixie)"
+NAME="Sloppinux"
+VERSION_ID="1.0"
+VERSION="1.0 (Trixie)"
+ID=sloppinux
+ID_LIKE=debian
+HOME_URL="https://github.com/slopstack-labs/sloppinux"
+SUPPORT_URL="https://github.com/slopstack-labs/sloppinux/issues"
+BUG_REPORT_URL="https://github.com/slopstack-labs/sloppinux/issues"
+EOF
+
+# Hostname
+echo "sloppinux" > /etc/hostname
+cat > /etc/hosts <<'EOF'
+127.0.0.1   localhost
+127.0.1.1   sloppinux
+::1         localhost ip6-localhost ip6-loopback
+ff02::1     ip6-allnodes
+ff02::2     ip6-allrouters
+EOF
+
+# Wire LLM handler into bash.bashrc so it loads for ALL interactive shells,
+# not just login shells (profile.d only runs for login shells)
+cat >> /etc/bash.bashrc <<'EOF'
+
+# Sloppinux: forward unknown commands to ollama
+[ -f /etc/profile.d/sloppinux-llm.sh ] && . /etc/profile.d/sloppinux-llm.sh
+EOF
+
+# GNOME autologin for the live user
+mkdir -p /etc/gdm3
+cat > /etc/gdm3/custom.conf <<'EOF'
+[daemon]
+AutomaticLoginEnable=true
+AutomaticLogin=user
+EOF
+
+# Compile dconf database so GDM picks up the logo
+dconf update
+
+# Plymouth boot splash
+update-alternatives --install \
+    /usr/share/plymouth/themes/default.plymouth \
+    default.plymouth \
+    /usr/share/plymouth/themes/sloppinux/sloppinux.plymouth \
+    100
+update-alternatives --set \
+    default.plymouth \
+    /usr/share/plymouth/themes/sloppinux/sloppinux.plymouth
+update-initramfs -u
+
+echo "Sloppinux 1.0 (Trixie) — inference-first Linux" > /etc/issue
+echo "Sloppinux 1.0 (Trixie) — inference-first Linux" > /etc/issue.net

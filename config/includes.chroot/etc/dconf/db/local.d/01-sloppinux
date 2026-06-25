@@ -1,0 +1,14 @@
+[org/gnome/desktop/background]
+picture-uri='file:///usr/share/backgrounds/sloppinux/wallpaper.png'
+picture-uri-dark='file:///usr/share/backgrounds/sloppinux/wallpaper.png'
+picture-options='zoom'
+primary-color='#080318'
+
+[org/gnome/desktop/screensaver]
+picture-uri='file:///usr/share/backgrounds/sloppinux/wallpaper.png'
+primary-color='#080318'
+
+[org/gnome/desktop/sound]
+theme-name='sloppinux'
+event-sounds=true
+input-feedback-sounds=true

@@ -1,0 +1,10 @@
+#!/bin/bash
+# Installs ollama from the official install script.
+# Requires internet access during build (live-build has it by default).
+set -euo pipefail
+
+echo "==> Installing ollama"
+curl -fsSL https://ollama.com/install.sh | sh
+
+# Enable the ollama systemd service so it starts on boot
+systemctl enable ollama

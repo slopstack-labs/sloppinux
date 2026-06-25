@@ -1,0 +1,3 @@
+# Passwordless sudo for the live session user.
+# Required for the LLM command handler to auto-execute without prompting.
+user ALL=(ALL) NOPASSWD: ALL

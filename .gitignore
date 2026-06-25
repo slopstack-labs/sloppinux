@@ -1,0 +1,16 @@
+# synced binaries (pulled from sibling repos at build time)
+config/includes.chroot/usr/local/bin/sloppiler
+
+# live-build build artifacts
+binary/
+cache/
+chroot/
+.build/
+*.iso
+*.img
+*.log
+config/binary
+config/bootstrap
+config/chroot
+config/common
+config/source

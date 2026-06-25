@@ -1,0 +1,18 @@
+# GNOME desktop and core system utilities
+task-gnome-desktop
+gnome-tweaks
+gnome-shell-extensions
+firefox-esr
+network-manager-gnome
+apt-transport-https
+ca-certificates
+curl
+wget
+git
+htop
+vim
+unzip
+plymouth
+plymouth-themes
+librsvg2-bin
+zsh

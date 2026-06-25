@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Sloppy Toppy
+Comment=System monitor with AI roasts
+Exec=sloppy-toppy
+Terminal=true
+Type=Application
+Icon=utilities-system-monitor
+Categories=System;Monitor;
+Keywords=cpu;memory;process;monitor;ai;

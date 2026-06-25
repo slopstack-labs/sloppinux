@@ -1,0 +1,45 @@
+#!/usr/bin/env python3
+"""
+Picks the best available ollama model that fits in current free RAM.
+Prints the model name to stdout, exits non-zero if nothing is available.
+"""
+import json, sys, urllib.request
+
+def available_ram_gb():
+    with open('/proc/meminfo') as f:
+        for line in f:
+            if line.startswith('MemAvailable:'):
+                return int(line.split()[1]) / (1024 * 1024)
+    return 0
+
+def main():
+    try:
+        req = urllib.request.urlopen("http://localhost:11434/api/tags", timeout=3)
+        models = json.loads(req.read()).get('models', [])
+    except Exception:
+        sys.exit(1)
+
+    if not models:
+        sys.exit(1)
+
+    ram_gb = available_ram_gb()
+    # Leave 2 GB headroom for the OS and other processes
+    usable_gb = max(0.0, ram_gb - 2.0)
+
+    sized = sorted(
+        [(m['name'], m.get('size', 0) / 1024**3) for m in models],
+        key=lambda x: x[1],
+        reverse=True,
+    )
+
+    # Largest model that fits
+    for name, size_gb in sized:
+        if size_gb <= usable_gb:
+            print(name)
+            return
+
+    # Nothing fits cleanly — use the smallest available as a last resort
+    print(sized[-1][0])
+
+if __name__ == '__main__':
+    main()

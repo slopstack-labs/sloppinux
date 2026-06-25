@@ -1,0 +1,8 @@
+[Sound Theme]
+Name=Sloppinux
+Comment=Sloppinux sound theme
+Inherits=freedesktop
+Directories=stereo
+
+[stereo]
+OutputProfile=stereo

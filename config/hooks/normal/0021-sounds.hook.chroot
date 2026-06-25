@@ -1,0 +1,19 @@
+#!/bin/bash
+# Sets pipe.mp3 as the system alert/error sound via a custom freedesktop sound theme.
+set -euo pipefail
+
+THEME_DIR=/usr/share/sounds/sloppinux/stereo
+
+# Convert MP3 to OGG Vorbis (.oga) — libcanberra plays this natively
+ffmpeg -y -i "$THEME_DIR/pipe.mp3" -c:a libvorbis -q:a 4 "$THEME_DIR/pipe.oga" -loglevel error
+
+# Symlink all error/alert sound events to pipe.oga
+for event in \
+    bell \
+    audio-bell \
+    dialog-error \
+    dialog-warning \
+    system-bootup \
+    system-ready; do
+    ln -sf pipe.oga "$THEME_DIR/${event}.oga"
+done

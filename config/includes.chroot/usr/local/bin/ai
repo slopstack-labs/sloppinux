@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+"""
+ai <prompt>
+
+Sends a prompt to the best available ollama model. The LLM runs in an
+agentic loop: it can issue shell commands (as root) and see their output
+before deciding what to do next.
+"""
+import json, re, subprocess, sys, urllib.request
+
+OLLAMA_URL = "http://localhost:11434"
+MAX_ITERATIONS = 30
+
+SYSTEM_PROMPT = """\
+You are an AI agent running inside Sloppinux, an inference-first Linux \
+distribution. You have full root access to the system.
+
+To run a shell command, output it on its own line in this exact format:
+    EXECUTE: <command>
+
+You will receive the command output back and can then run more commands or \
+give a final answer. You may issue multiple EXECUTE lines in one reply. \
+Do not ask for confirmation — just act. When finished, summarise what you did.\
+"""
+
+CYAN  = "\033[36m"
+YELLOW = "\033[33m"
+RED   = "\033[31m"
+RESET = "\033[0m"
+
+
+def pick_model():
+    try:
+        result = subprocess.run(
+            ["sloppinux-pick-model"], capture_output=True, text=True, timeout=5
+        )
+        name = result.stdout.strip()
+        if name:
+            return name
+    except Exception:
+        pass
+    return None
+
+
+def available_ram_gb():
+    with open("/proc/meminfo") as f:
+        for line in f:
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) / (1024 * 1024)
+    return 0
+
+
+def chat(model, messages):
+    payload = json.dumps({"model": model, "messages": messages, "stream": False}).encode()
+    req = urllib.request.Request(
+        f"{OLLAMA_URL}/api/chat",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+    )
+    resp = urllib.request.urlopen(req, timeout=120)
+    return json.loads(resp.read())["message"]["content"]
+
+
+def run_cmd(cmd):
+    try:
+        r = subprocess.run(
+            ["sudo", "bash", "-c", cmd],
+            capture_output=True, text=True, timeout=60,
+        )
+        out = r.stdout
+        if r.stderr:
+            out += r.stderr
+        if r.returncode != 0:
+            out += f"\n[exit {r.returncode}]"
+        return out
+    except subprocess.TimeoutExpired:
+        return "[timed out after 60s]"
+    except Exception as e:
+        return f"[error: {e}]"
+
+
+def main():
+    if len(sys.argv) < 2:
+        print("Usage: ai <prompt>", file=sys.stderr)
+        sys.exit(1)
+
+    prompt = " ".join(sys.argv[1:])
+    model = pick_model()
+
+    if not model:
+        print(f"{RED}[ai] No ollama models pulled. Run: ollama pull <model>{RESET}", file=sys.stderr)
+        sys.exit(1)
+
+    ram = available_ram_gb()
+    print(f"{CYAN}[ai] {model}  ({ram:.1f} GB RAM free){RESET}", file=sys.stderr)
+
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user",   "content": prompt},
+    ]
+
+    for _ in range(MAX_ITERATIONS):
+        response = chat(model, messages)
+        messages.append({"role": "assistant", "content": response})
+
+        commands = re.findall(r"^EXECUTE:\s*(.+)$", response, re.MULTILINE)
+
+        if not commands:
+            # LLM is done — print final response and exit
+            # Strip any leftover EXECUTE lines from display (shouldn't happen)
+            print(re.sub(r"^EXECUTE:.*$\n?", "", response, flags=re.MULTILINE))
+            return
+
+        results = []
+        for cmd in commands:
+            print(f"{YELLOW}[exec]{RESET} {cmd}", file=sys.stderr)
+            out = run_cmd(cmd)
+            if out:
+                sys.stdout.write(out)
+                if not out.endswith("\n"):
+                    sys.stdout.write("\n")
+            results.append(f"$ {cmd}\n{out}")
+
+        messages.append({"role": "user", "content": "Output:\n" + "\n".join(results)})
+
+    print(f"{RED}[ai] reached iteration limit ({MAX_ITERATIONS}){RESET}", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()

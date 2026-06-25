@@ -1,0 +1,8 @@
+#!/bin/bash
+# Converts the wallpaper SVG to PNG at 4K resolution.
+set -euo pipefail
+
+rsvg-convert \
+    -w 3840 -h 2160 \
+    /usr/share/backgrounds/sloppinux/wallpaper.svg \
+    -o /usr/share/backgrounds/sloppinux/wallpaper.png

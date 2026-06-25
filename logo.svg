@@ -1,0 +1,52 @@
+<svg width="1040" height="1040" viewBox="0 0 1040 1040" role="img" xmlns="http://www.w3.org/2000/svg" style="max-width: 1040px; display: block; margin-inline: auto;">
+<title>Sloppy isometric stacked layers, tightly spaced</title>
+<desc>Three isometric glassy platform layers stacked crookedly and close together</desc>
+<defs>
+  <linearGradient id="topA" x1="0%" y1="0%" x2="100%" y2="100%">
+    <stop offset="0%" stop-color="#3ecfcf"></stop>
+    <stop offset="100%" stop-color="#6a4fd4"></stop>
+  </linearGradient>
+  <linearGradient id="topB" x1="0%" y1="0%" x2="100%" y2="100%">
+    <stop offset="0%" stop-color="#9b5de5"></stop>
+    <stop offset="100%" stop-color="#4361ee"></stop>
+  </linearGradient>
+  <linearGradient id="topC" x1="0%" y1="0%" x2="100%" y2="100%">
+    <stop offset="0%" stop-color="#5e60ce"></stop>
+    <stop offset="100%" stop-color="#3a0ca3"></stop>
+  </linearGradient>
+  <radialGradient id="bgFade" cx="50%" cy="50%" r="50%">
+    <stop offset="0%" stop-color="#a8b4ff" stop-opacity="0.5"></stop>
+    <stop offset="100%" stop-color="#a8b4ff" stop-opacity="0"></stop>
+  </radialGradient>
+</defs>
+
+<circle cx="520" cy="520" r="400" fill="url(#bgFade)"></circle>
+
+<!-- BOTTOM SLAB — shifted right, rotated 6deg -->
+<g transform="translate(556, 638) rotate(6)">
+  <polygon points="0,120 260,0 260,64 0,184" fill="#1a0870" opacity="0.75"></polygon>
+  <polygon points="-260,0 0,120 0,184 -260,64" fill="#2d0f8f" opacity="0.75"></polygon>
+  <polygon points="0,-120 260,0 0,120 -260,0" fill="url(#topC)" opacity="0.85"></polygon>
+  <polygon points="0,-120 260,0 0,120 -260,0" fill="none" stroke="#6de8ff" stroke-width="3.6" opacity="0.7"></polygon>
+  <polygon points="0,-120 260,0 100,40 -100,-60" fill="white" opacity="0.07"></polygon>
+</g>
+
+<!-- MIDDLE SLAB — shifted left, rotated -5deg -->
+<g transform="translate(484, 488) rotate(-5)">
+  <polygon points="0,120 260,0 260,64 0,184" fill="#3a0a8a" opacity="0.75"></polygon>
+  <polygon points="-260,0 0,120 0,184 -260,64" fill="#560bad" opacity="0.75"></polygon>
+  <polygon points="0,-120 260,0 0,120 -260,0" fill="url(#topB)" opacity="0.85"></polygon>
+  <polygon points="0,-120 260,0 0,120 -260,0" fill="none" stroke="#6de8ff" stroke-width="3.6" opacity="0.8"></polygon>
+  <polygon points="0,-120 260,0 100,40 -100,-60" fill="white" opacity="0.08"></polygon>
+</g>
+
+<!-- TOP SLAB — rotated 3deg -->
+<g transform="translate(528, 338) rotate(3)">
+  <polygon points="0,120 260,0 260,64 0,184" fill="#0077a8" opacity="0.65"></polygon>
+  <polygon points="-260,0 0,120 0,184 -260,64" fill="#0096c7" opacity="0.65"></polygon>
+  <polygon points="0,-120 260,0 0,120 -260,0" fill="url(#topA)" opacity="0.9"></polygon>
+  <polygon points="0,-120 260,0 0,120 -260,0" fill="none" stroke="#6de8ff" stroke-width="4" opacity="0.9"></polygon>
+  <polygon points="0,-120 160,20 60,70 -120,-40" fill="white" opacity="0.13"></polygon>
+</g>
+
+</svg>
