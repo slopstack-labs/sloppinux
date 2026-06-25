@@ -64,7 +64,7 @@ def chat(model, messages):
 def run_cmd(cmd):
     try:
         r = subprocess.run(
-            ["sudo", "bash", "-c", cmd],
+            ["sloppinux-exec", cmd],
             capture_output=True, text=True, timeout=60,
         )
         out = r.stdout

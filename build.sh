@@ -8,6 +8,9 @@ DIST="trixie"
 ARCH="amd64"
 ISO_NAME="sloppinux-${DIST}-${ARCH}.iso"
 
+QUICK=0
+[[ "${1:-}" == "--quick" ]] && QUICK=1
+
 if [[ $EUID -ne 0 ]]; then
     echo "Error: run as root (sudo ./build.sh)" >&2
     exit 1
@@ -29,23 +32,28 @@ else
     echo "Warning: ../sloppiler/sloppiler not found, using cached binary" >&2
 fi
 
-echo "==> Cleaning previous build artifacts"
-lb clean --purge
+if [[ $QUICK -eq 1 ]]; then
+    echo "==> Quick build: cleaning binary only (reusing chroot cache)"
+    lb clean --binary
+else
+    echo "==> Cleaning previous build artifacts"
+    lb clean
+fi
 
 echo "==> Configuring live-build"
 lb config \
     --distribution "$DIST" \
     --architectures "$ARCH" \
     --archive-areas "main contrib non-free non-free-firmware" \
-    --debian-installer live \
-    --debian-installer-gui true \
+    --debian-installer none \
     --iso-application "Sloppinux" \
     --iso-publisher "Slopstack Labs" \
     --iso-volume "SLOPPINUX" \
     --bootappend-live "boot=live components quiet splash locales=en_US.UTF-8 keyboard-layouts=us" \
     --linux-flavours amd64 \
     --apt-recommends true \
-    --apt-indices false
+    --apt-indices false \
+    --apt-http-proxy "http://localhost:3142"
 
 echo "==> Building ISO (this takes a while)"
 lb build

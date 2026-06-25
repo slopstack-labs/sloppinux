@@ -4,46 +4,38 @@
 set -euo pipefail
 
 # ── Text replacement ─────────────────────────────────────────────────────────
-# Patch every bootloader config file we can find.
 while IFS= read -r -d '' cfg; do
     sed -i \
         -e 's/Debian GNU\/Linux/Sloppinux/gi' \
         -e 's/Debian Live/Sloppinux Live/gi' \
         -e 's/Start Debian/Start Sloppinux/gi' \
+        -e 's/Install Debian/Install Sloppinux/gi' \
+        -e 's/Graphical Debian/Graphical Sloppinux/gi' \
         "$cfg"
-done < <(find binary/boot binary/isolinux binary/EFI \
-              -type f \( -name "*.cfg" -o -name "*.conf" -o -name "*.lst" \) \
+done < <(find binary -type f \( -name "*.cfg" -o -name "*.conf" -o -name "*.lst" -o -name "*.txt" \) \
+              ! -path "*/live-theme/theme.txt" \
               -print0 2>/dev/null)
 
-# ── GRUB terminal colors (logo palette) ──────────────────────────────────────
-# Inject color vars before the first menuentry so they apply to the whole menu.
-for cfg in binary/boot/grub/grub.cfg binary/boot/grub/grub-efi.cfg; do
-    [[ -f "$cfg" ]] || continue
-    # Skip if already patched
+# ── GRUB terminal colors ──────────────────────────────────────────────────────
+for cfg in $(find binary -name "grub.cfg" -o -name "grub-efi.cfg" 2>/dev/null); do
     grep -q "sloppinux_colors" "$cfg" && continue
-    read -r -d '' COLOR_BLOCK <<'GRUBEOF' || true
-# sloppinux_colors
-set color_normal=light-cyan/black
-set color_highlight=black/light-cyan
-set menu_color_normal=light-cyan/black
-set menu_color_highlight=black/light-cyan
-GRUBEOF
-    # Insert after the first 'set default' line
-    sed -i "/^set default=/a\\${COLOR_BLOCK}" "$cfg"
+    sed -i "1a # sloppinux_colors\nset color_normal=light-cyan/black\nset color_highlight=black/light-cyan\nset menu_color_normal=light-cyan/black\nset menu_color_highlight=black/light-cyan" "$cfg"
 done
 
 # ── GRUB splash background ───────────────────────────────────────────────────
-# Convert the wallpaper SVG to a 1280×800 PNG for the GRUB splash.
-SPLASH_DIR="binary/boot/grub"
 WALLPAPER_SVG="config/includes.chroot/usr/share/backgrounds/sloppinux/wallpaper.svg"
+THEME_DIR="binary/boot/grub/live-theme"
 
 if command -v rsvg-convert &>/dev/null && [[ -f "$WALLPAPER_SVG" ]]; then
-    mkdir -p "$SPLASH_DIR"
-    rsvg-convert -w 1280 -h 800 "$WALLPAPER_SVG" -o "$SPLASH_DIR/splash.png"
-    for cfg in binary/boot/grub/grub.cfg binary/boot/grub/grub-efi.cfg; do
-        [[ -f "$cfg" ]] || continue
-        grep -q "splash.png" "$cfg" && continue
-        sed -i "1i insmod png\nbackground_image /boot/grub/splash.png\n" "$cfg"
+    mkdir -p "$THEME_DIR"
+    # Copy our theme.txt into the binary
+    cp config/bootloaders/grub-pc/live-theme/theme.txt "$THEME_DIR/theme.txt"
+    # Generate background at a GRUB-friendly resolution
+    rsvg-convert -w 1920 -h 1080 "$WALLPAPER_SVG" -o "$THEME_DIR/background.png"
+    # Point grub.cfg at the theme
+    for cfg in $(find binary -name "grub.cfg" 2>/dev/null); do
+        grep -q "live-theme" "$cfg" && continue
+        sed -i "1a insmod png\nset theme=/boot/grub/live-theme/theme.txt" "$cfg"
     done
 fi
 

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Install Sloppinux
+GenericName=System Installer
+Comment=Install Sloppinux to disk
+TryExec=calamares
+Exec=calamares
+Icon=/usr/share/pixmaps/sloppinux-logo.png
+Terminal=false
+Categories=System;

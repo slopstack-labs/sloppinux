@@ -2,6 +2,7 @@
 # Installs ollama from the official install script.
 # Requires internet access during build (live-build has it by default).
 set -euo pipefail
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 echo "==> Installing ollama"
 curl -fsSL https://ollama.com/install.sh | sh

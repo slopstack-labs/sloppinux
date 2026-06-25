@@ -1,0 +1,56 @@
+#!/bin/bash
+# Wires up Sloppinux branding for Calamares and sets it to auto-launch.
+set -euo pipefail
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+BRANDING_DIR=/etc/calamares/branding/sloppinux
+
+# Copy logo into branding directory
+cp /usr/share/pixmaps/sloppinux-logo.png "$BRANDING_DIR/sloppinux-logo.png"
+
+# Point Calamares at the sloppinux branding (calamares-settings-debian sets 'debian')
+if [[ -f /etc/calamares/settings.conf ]]; then
+    sed -i 's/^branding:.*/branding: sloppinux/' /etc/calamares/settings.conf
+fi
+
+# Also patch the desktop entry in case calamares-settings-debian overwrote our include
+cat > /usr/share/applications/calamares.desktop <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Install Sloppinux
+GenericName=System Installer
+Comment=Install Sloppinux to disk
+TryExec=calamares
+Exec=calamares
+Icon=/usr/share/pixmaps/sloppinux-logo.png
+Terminal=false
+Categories=System;
+EOF
+
+mkdir -p /etc/calamares/modules
+
+# Set up unpackfs to install from the live squashfs
+cat > /etc/calamares/modules/unpackfs.conf <<'EOF'
+---
+unpack:
+    - source: "/run/live/medium/live/filesystem.squashfs"
+      sourcefs: "squashfs"
+      destination: ""
+EOF
+
+# Override bootloader config: EFI only (grub-pc conflicts with grub-efi-amd64)
+cat > /etc/calamares/modules/bootloader.conf <<'EOF'
+---
+efiBootLoader: "grub"
+grubInstall: "grub-install"
+grubMkconfig: "update-grub"
+grubCfg: "/boot/grub/grub.cfg"
+grubProbeExe: "grub-probe"
+efiBootLoaderId: "sloppinux"
+installEFIFallback: true
+grubInstallArguments: []
+packages:
+    - install:
+        - ["grub-efi-amd64", "grub-efi-amd64-signed", "shim-signed", "efibootmgr"]
+      remove: []
+EOF

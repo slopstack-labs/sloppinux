@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Install Sloppinux
+Comment=Install Sloppinux to disk
+Exec=calamares
+Icon=/usr/share/pixmaps/sloppinux-logo.png
+Terminal=false
+Categories=System;
+OnlyShowIn=GNOME;
+X-GNOME-Autostart-enabled=true

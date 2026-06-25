@@ -1,6 +1,7 @@
 #!/bin/bash
 # Downloads the sloppy-toppy pre-built binary from the GitHub release.
 set -euo pipefail
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 RELEASE_URL="https://github.com/slopstack-labs/sloppy-toppy/releases/download/v0.1.0-agentic-alignment-alpha.1/sloppy-toppy-linux-x86_64"
 

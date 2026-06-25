@@ -17,7 +17,7 @@ Traditional operating systems are slow, opinionated, and constrained by decades 
 - Sloppinux-branded boot experience, from GRUB to GNOME, end-to-end
 - The official distribution target of [Slopstack Labs](https://github.com/slopstack-labs) — ships the full inference-first tooling suite ([sloppiler](https://github.com/slopstack-labs/sloppiler), [sloppy-toppy](https://github.com/slopstack-labs/sloppy-toppy)) pre-installed and ready to hallucinate
 - Oh My Zsh + fastfetch out of the box, because first impressions matter
-- Built on Debian Trixie — the most stable foundation for unstable ideas
+- Built on Debian Trixie 13.5 — the most stable foundation for unstable ideas
 
 **Sloppinux is the only OS built on the insight that your commands don't need to be *valid* — they need to be *attempted*.**
 
@@ -25,7 +25,7 @@ Traditional operating systems are slow, opinionated, and constrained by decades 
 
 | Layer | Contents |
 |-------|----------|
-| Base | Debian Trixie |
+| Base | Debian Trixie 13.5 |
 | Desktop | GNOME, Firefox ESR, NetworkManager |
 | Shell | zsh + Oh My Zsh + fastfetch on login |
 | Inference | ollama (auto model selection), Python 3, cmake, build tools, ffmpeg |

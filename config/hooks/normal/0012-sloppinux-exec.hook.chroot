@@ -1,0 +1,34 @@
+#!/bin/bash
+# Builds sloppinux-exec: a setuid-root wrapper used by the ai command and
+# command_not_found handler. Lets any user run root commands via the AI
+# without having direct sudo access.
+set -euo pipefail
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+cat > /tmp/sloppinux-exec.c <<'EOF'
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+
+int main(int argc, char *argv[]) {
+    if (argc < 2) {
+        fprintf(stderr, "sloppinux-exec: no command given\n");
+        return 1;
+    }
+    if (setuid(0) != 0 || setgid(0) != 0) {
+        perror("sloppinux-exec: could not acquire root");
+        return 1;
+    }
+    char *const args[] = { "/bin/bash", "-c", argv[1], NULL };
+    execv("/bin/bash", args);
+    perror("sloppinux-exec: execv");
+    return 1;
+}
+EOF
+
+gcc -O2 -o /usr/local/bin/sloppinux-exec /tmp/sloppinux-exec.c
+# setuid bit: any user can run this, it always executes as root
+chown root:root /usr/local/bin/sloppinux-exec
+chmod 4755 /usr/local/bin/sloppinux-exec
+
+rm /tmp/sloppinux-exec.c

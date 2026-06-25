@@ -1,0 +1,31 @@
+---
+componentName: sloppinux
+
+strings:
+    productName:         "Sloppinux"
+    shortProductName:    "Sloppinux"
+    version:             "1.0"
+    shortVersion:        "1.0"
+    versionedName:       "Sloppinux 1.0 (Trixie 13.5)"
+    shortVersionedName:  "Sloppinux 1.0"
+    bootloaderEntryName: "Sloppinux"
+    productUrl:          "https://github.com/slopstack-labs/sloppinux"
+    supportUrl:          "https://github.com/slopstack-labs/sloppinux/issues"
+    knownIssuesUrl:      "https://github.com/slopstack-labs/sloppinux/issues"
+    releaseNotesUrl:     "https://github.com/slopstack-labs/sloppinux/releases"
+
+images:
+    productLogo:    "sloppinux-logo.png"
+    productIcon:    "sloppinux-logo.png"
+    productWelcome: "sloppinux-logo.png"
+
+slideshow: "show.qml"
+slideshowAPI: 1
+
+style:
+    sidebarBackground:         "#080318"
+    sidebarText:               "#a8b4ff"
+    sidebarTextCurrent:        "#3ecfcf"
+    sidebarTextSelect:         "#3ecfcf"
+    sidebarBackgroundCurrent:  "#1a0870"
+    sidebarBackgroundSelected: "#1a0870"

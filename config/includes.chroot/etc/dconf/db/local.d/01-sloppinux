@@ -8,6 +8,13 @@ primary-color='#080318'
 picture-uri='file:///usr/share/backgrounds/sloppinux/wallpaper.png'
 primary-color='#080318'
 
+[org/gnome/desktop/interface]
+color-scheme='prefer-dark'
+gtk-theme='Adwaita-dark'
+
+[org/gnome/shell]
+enabled-extensions=['dash-to-dock@micxgx.gmail.com', 'system-monitor@paradoxxx.zero.gmail.com']
+
 [org/gnome/desktop/sound]
 theme-name='sloppinux'
 event-sounds=true

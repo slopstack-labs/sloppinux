@@ -1,12 +1,13 @@
 #!/bin/bash
 set -euo pipefail
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # OS identity
 cat > /etc/os-release <<'EOF'
-PRETTY_NAME="Sloppinux 1.0 (Trixie)"
+PRETTY_NAME="Sloppinux 1.0 (Trixie 13.5)"
 NAME="Sloppinux"
 VERSION_ID="1.0"
-VERSION="1.0 (Trixie)"
+VERSION="1.0 (Trixie 13.5)"
 ID=sloppinux
 ID_LIKE=debian
 HOME_URL="https://github.com/slopstack-labs/sloppinux"
@@ -40,19 +41,20 @@ AutomaticLoginEnable=true
 AutomaticLogin=user
 EOF
 
+# Replace the debian-logo.png that desktop-base ships — GDM points to this file
+cp /usr/share/pixmaps/sloppinux-logo.png /usr/share/pixmaps/debian-logo.png
+
 # Compile dconf database so GDM picks up the logo
 dconf update
 
-# Plymouth boot splash
-update-alternatives --install \
-    /usr/share/plymouth/themes/default.plymouth \
-    default.plymouth \
-    /usr/share/plymouth/themes/sloppinux/sloppinux.plymouth \
-    100
-update-alternatives --set \
-    default.plymouth \
-    /usr/share/plymouth/themes/sloppinux/sloppinux.plymouth
-update-initramfs -u
+# Plymouth boot splash — set via both mechanisms for reliability
+mkdir -p /etc/plymouth
+cat > /etc/plymouth/plymouthd.conf <<'EOF'
+[Daemon]
+Theme=sloppinux
+ShowDelay=0
+EOF
+plymouth-set-default-theme -R sloppinux
 
-echo "Sloppinux 1.0 (Trixie) — inference-first Linux" > /etc/issue
-echo "Sloppinux 1.0 (Trixie) — inference-first Linux" > /etc/issue.net
+echo "Sloppinux 1.0 (Trixie 13.5) — inference-first Linux" > /etc/issue
+echo "Sloppinux 1.0 (Trixie 13.5) — inference-first Linux" > /etc/issue.net

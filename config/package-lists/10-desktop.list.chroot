@@ -16,3 +16,14 @@ plymouth
 plymouth-themes
 librsvg2-bin
 zsh
+fastfetch
+gnome-shell-extension-dashtodock
+gnome-shell-extension-system-monitor
+gnome-shell-extension-manager
+calamares
+calamares-settings-debian
+grub-efi-amd64
+grub-efi-amd64-signed
+grub-common
+shim-signed
+efibootmgr

@@ -1,15 +1,19 @@
 #!/bin/bash
 # Installs Oh My Zsh system-wide and sets zsh as the default shell.
 set -euo pipefail
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 echo "==> Installing Oh My Zsh"
 git clone --depth=1 https://github.com/ohmyzsh/ohmyzsh.git /usr/share/oh-my-zsh
 
 echo "==> Setting zsh as system default shell"
-# New users created from this point will get zsh
+# adduser reads DSHELL from adduser.conf — live-config uses adduser to create
+# the live user, so this is the reliable way to make zsh the default.
+sed -i 's|^DSHELL=.*|DSHELL=/bin/zsh|' /etc/adduser.conf
+# Fallback: useradd default for any other tooling
 sed -i 's|^SHELL=.*|SHELL=/bin/zsh|' /etc/default/useradd
 
-# Set zsh for root and the pre-existing user skeleton
+# Set zsh for root
 chsh -s /bin/zsh root
 cp /etc/skel/.zshrc /root/.zshrc
 

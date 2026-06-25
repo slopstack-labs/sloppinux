@@ -1,6 +1,7 @@
 #!/bin/bash
 # Sets pipe.mp3 as the system alert/error sound via a custom freedesktop sound theme.
 set -euo pipefail
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 THEME_DIR=/usr/share/sounds/sloppinux/stereo
 

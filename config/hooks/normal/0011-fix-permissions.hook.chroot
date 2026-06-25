@@ -1,0 +1,14 @@
+#!/bin/bash
+# Explicitly sets execute permissions on all Sloppinux binaries.
+# live-build does not reliably preserve the execute bit from includes.chroot.
+set -euo pipefail
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+chmod +x \
+    /usr/local/bin/ai \
+    /usr/local/bin/sloppinux-pick-model \
+    /usr/local/bin/sloppiler 2>/dev/null || true
+
+# sloppinux-exec is built by 0012 hook — re-assert setuid in case something stripped it
+chown root:root /usr/local/bin/sloppinux-exec 2>/dev/null || true
+chmod 4755      /usr/local/bin/sloppinux-exec 2>/dev/null || true

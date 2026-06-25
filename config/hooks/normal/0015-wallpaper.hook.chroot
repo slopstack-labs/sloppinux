@@ -1,6 +1,7 @@
 #!/bin/bash
 # Converts the wallpaper SVG to PNG at 4K resolution.
 set -euo pipefail
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 rsvg-convert \
     -w 3840 -h 2160 \
