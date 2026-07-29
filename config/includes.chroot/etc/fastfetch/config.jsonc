@@ -13,7 +13,7 @@
     "color": { "keys": "cyan", "title": "magenta" }
   },
   "modules": [
-    { "type": "title",    "format": "{user}@{hostname}" },
+    "title",
     "separator",
     { "type": "os",       "key": "OS" },
     { "type": "kernel",   "key": "Kernel" },

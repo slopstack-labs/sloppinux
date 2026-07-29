@@ -11,6 +11,8 @@ cp /usr/share/pixmaps/sloppinux-logo.png "$BRANDING_DIR/sloppinux-logo.png"
 # Point Calamares at the sloppinux branding (calamares-settings-debian sets 'debian')
 if [[ -f /etc/calamares/settings.conf ]]; then
     sed -i 's/^branding:.*/branding: sloppinux/' /etc/calamares/settings.conf
+    # Inject fix-grub-packages shellprocess before the bootloader step
+    sed -i 's/- bootloader/- fix-grub-packages\n        - bootloader/' /etc/calamares/settings.conf
 fi
 
 # Also patch the desktop entry in case calamares-settings-debian overwrote our include
@@ -38,7 +40,7 @@ unpack:
       destination: ""
 EOF
 
-# Override bootloader config: EFI only (grub-pc conflicts with grub-efi-amd64)
+# Override bootloader config
 cat > /etc/calamares/modules/bootloader.conf <<'EOF'
 ---
 efiBootLoader: "grub"
@@ -49,8 +51,19 @@ grubProbeExe: "grub-probe"
 efiBootLoaderId: "sloppinux"
 installEFIFallback: true
 grubInstallArguments: []
-packages:
-    - install:
-        - ["grub-efi-amd64", "grub-efi-amd64-signed", "shim-signed", "efibootmgr"]
-      remove: []
+EOF
+
+# Shellprocess that runs inside the target chroot before bootloader installation.
+# Swaps grub-efi-amd64 (from squashfs) for grub-pc when installing to a BIOS system.
+cat > /etc/calamares/modules/fix-grub-packages.conf <<'EOF'
+---
+dontChroot: false
+timeout: 120
+script:
+    - "-": |
+          export DEBIAN_FRONTEND=noninteractive
+          if [ ! -d /sys/firmware/efi ]; then
+              apt-get remove -y grub-efi-amd64 grub-efi-amd64-signed shim-signed efibootmgr 2>/dev/null || true
+              apt-get install -y grub-pc grub-common 2>/dev/null || true
+          fi
 EOF
