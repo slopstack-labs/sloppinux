@@ -1,0 +1,10 @@
+# Installed in live-build's earlier "install" pass, in its own apt-get
+# transaction, before the desktop/inference lists (which run in the "live"
+# pass). This lets aspell's own postinst register its update-alternatives
+# entry before dictionaries-common's aspell-autobuildhash trigger runs
+# against the full desktop package set — installing it bundled together
+# with task-gnome-desktop hits a dpkg trigger-ordering bug where
+# aspell-autobuildhash crashes (Debian bug in trixie's dictionaries-common:
+# "Error: /dev/null:1: The key "/usr/bin/aspell" is unknown").
+aspell
+aspell-en

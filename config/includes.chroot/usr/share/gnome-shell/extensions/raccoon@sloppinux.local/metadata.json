@@ -1,0 +1,7 @@
+{
+    "uuid": "raccoon@sloppinux.local",
+    "name": "Sloppy Raccoon",
+    "description": "A small raccoon lives in your panel. Feed it (drag a file onto it) or it gets bored and starts improvising — with root.",
+    "shell-version": ["45", "46", "47", "48"],
+    "url": "https://github.com/slopstack-labs/sloppinux"
+}

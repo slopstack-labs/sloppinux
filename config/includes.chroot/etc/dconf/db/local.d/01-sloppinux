@@ -13,7 +13,7 @@ color-scheme='prefer-dark'
 gtk-theme='Adwaita-dark'
 
 [org/gnome/shell]
-enabled-extensions=['dash-to-dock@micxgx.gmail.com', 'system-monitor@paradoxxx.zero.gmail.com']
+enabled-extensions=['dash-to-dock@micxgx.gmail.com', 'system-monitor@paradoxxx.zero.gmail.com', 'raccoon@sloppinux.local']
 
 [org/gnome/desktop/sound]
 theme-name='sloppinux'

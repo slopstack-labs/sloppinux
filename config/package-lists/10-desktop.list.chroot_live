@@ -20,6 +20,7 @@ fastfetch
 gnome-shell-extension-dashtodock
 gnome-shell-extension-system-monitor
 gnome-shell-extension-manager
+pulseaudio-utils
 calamares
 calamares-settings-debian
 grub-efi-amd64

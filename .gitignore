@@ -14,3 +14,17 @@ config/bootstrap
 config/chroot
 config/common
 config/source
+.lock
+chroot.files
+chroot.packages.install
+chroot.packages.live
+binary.modified_timestamps
+live-image-*.contents
+live-image-*.files
+live-image-*.packages
+
+# live-build auto-populates these on `lb config` (stock Debian Live hooks
+# and the default task list) — ours all live under 0xxx-*.hook.chroot
+config/hooks/live/
+config/hooks/normal/[1-9]*.hook.chroot
+config/package-lists/live.list.chroot

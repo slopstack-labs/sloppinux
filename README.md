@@ -13,6 +13,7 @@ Traditional operating systems are slow, opinionated, and constrained by decades 
 - LLM-native command execution substrate — unknown commands are routed directly to ollama for holistic intent resolution
 - Automatic model selection based on available RAM — always leveraging your full inference capacity
 - `ai <prompt>` agentic loop — let the model interact with your system as it sees fit, with full root privileges
+- A raccoon lives in your GNOME panel — feed it by dragging a file onto it, or it gets bored and starts improvising with root
 - Inference-first sound design — `pipe.mp3` as the system alert, because errors should feel intentional
 - Sloppinux-branded boot experience, from GRUB to GNOME, end-to-end
 - The official distribution target of [Slopstack Labs](https://github.com/slopstack-labs) — ships the full inference-first tooling suite ([sloppiler](https://github.com/slopstack-labs/sloppiler), [sloppy-toppy](https://github.com/slopstack-labs/sloppy-toppy)) pre-installed and ready to hallucinate
@@ -48,6 +49,8 @@ sudo ./build.sh
 The build syncs the latest `sloppiler` binary from `../sloppiler` automatically before assembling the ISO. Takes 20–40 minutes depending on mirror speed and model compilation time.
 
 The output ISO (`sloppinux-trixie-amd64.iso`) is a hybrid image — boot from USB or run in a VM.
+
+**Not on Debian/Ubuntu?** `./build-in-container.sh` runs the whole build inside a throwaway Debian container (Docker or Podman, whichever is installed) instead of a VM — `live-build` needs root and chroot/loopback-mount access, so the container runs `--privileged`. Accepts the same flags as `build.sh`, e.g. `./build-in-container.sh --quick`.
 
 ```bash
 # Write to USB (replace /dev/sdX)
@@ -106,6 +109,8 @@ config/
     etc/fastfetch/                              # fastfetch config + ASCII logo
     usr/share/backgrounds/sloppinux/            # wallpaper SVG
     usr/share/sounds/sloppinux/                 # pipe.mp3 sound theme
+    usr/share/gnome-shell/extensions/
+      raccoon@sloppinux.local/                  # panel raccoon — feed it or it uses root
     usr/share/plymouth/themes/sloppinux/        # boot splash
 ```
 

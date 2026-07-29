@@ -11,8 +11,22 @@ cp /usr/share/pixmaps/sloppinux-logo.png "$BRANDING_DIR/sloppinux-logo.png"
 # Point Calamares at the sloppinux branding (calamares-settings-debian sets 'debian')
 if [[ -f /etc/calamares/settings.conf ]]; then
     sed -i 's/^branding:.*/branding: sloppinux/' /etc/calamares/settings.conf
-    # Inject fix-grub-packages shellprocess before the bootloader step
-    sed -i 's/- bootloader/- fix-grub-packages\n        - bootloader/' /etc/calamares/settings.conf
+
+    # fix-grub-packages isn't a real Calamares module type — it's a named
+    # instance of the generic shellprocess module, which Calamares only
+    # recognises if declared under `instances:` and referenced in the
+    # sequence as `<id>@<module>`.
+    sed -i '/^modules-search:/a\
+instances:\
+- id: fix-grub-packages\
+  module: shellprocess\
+  config: fix-grub-packages.conf' /etc/calamares/settings.conf
+
+    # Inject it right before the "bootloader" step. Anchored to the exact
+    # line so it doesn't also match "bootloader-config" (a previous
+    # unanchored version of this sed matched both, registering
+    # fix-grub-packages twice and breaking module loading).
+    sed -i 's/^\( *\)- bootloader$/\1- fix-grub-packages@shellprocess\n\1- bootloader/' /etc/calamares/settings.conf
 fi
 
 # Also patch the desktop entry in case calamares-settings-debian overwrote our include
