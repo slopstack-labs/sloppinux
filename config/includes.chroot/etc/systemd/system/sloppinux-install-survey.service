@@ -1,0 +1,38 @@
+# First-boot post-install survey for installed Sloppinux systems. The
+# Calamares target fixup captures the partitioning into install-survey.txt;
+# this has the resident model grade it (score: N/10 + a verdict) into
+# install-score.txt, which the first-login welcome notification picks up.
+# See /usr/local/bin/sloppinux-install-survey.
+[Unit]
+Description=Sloppinux post-install survey (model grades your partitioning)
+Documentation=file:/usr/local/bin/sloppinux-install-survey
+Wants=ollama.service
+After=ollama.service
+# Installed systems only: the live session has no install to judge.
+ConditionPathExists=!/run/live/medium
+ConditionPathExists=/var/lib/sloppinux/install-survey.txt
+# Run-once: the script writes the score file only on success, so a boot
+# without ollama or a model simply re-arms it for the next one.
+ConditionPathExists=!/var/lib/sloppinux/install-score.txt
+
+[Service]
+# Type=exec, not oneshot (same reasoning as sloppinux-model-autopull): a
+# oneshot stays "activating" until it exits and multi-user.target waits for
+# it, so up to 120 s of waiting for ollama plus CPU inference would hold boot
+# "unfinished". With exec the critique happens in the background.
+Type=exec
+ExecStart=/usr/local/bin/sloppinux-install-survey
+StateDirectory=sloppinux
+Restart=no
+SyslogIdentifier=sloppinux-install-survey
+Nice=19
+IOSchedulingClass=idle
+# The script's own HTTP timeout (900 s) is the real bound; this is the backstop.
+RuntimeMaxSec=20min
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

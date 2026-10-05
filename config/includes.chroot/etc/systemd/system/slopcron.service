@@ -1,0 +1,19 @@
+# Stochastic cron: one evaluation pass over every slopcrontab. The model
+# decides whether each natural-language entry is due; YES hands it to `ai`.
+# Fired by slopcron.timer; see `slopcron --help`.
+[Unit]
+Description=Sloppinux stochastic cron (one evaluation pass)
+Documentation=file:/usr/local/bin/slopcron
+After=ollama.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/slopcron run
+SyslogIdentifier=slopcron
+# The default motivational-note entry writes under /var/lib/sloppinux.
+StateDirectory=sloppinux
+Nice=10
+# Each YES gets ten minutes inside slopcron; this caps a pass where the model
+# says YES to everything. Verdicts are saved per entry, so a cut-off pass
+# loses nothing but the rest of its enthusiasm.
+TimeoutStartSec=1h

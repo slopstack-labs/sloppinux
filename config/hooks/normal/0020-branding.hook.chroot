@@ -1,19 +1,35 @@
 #!/bin/bash
+# Applies Sloppinux identity: os-release, hostname, issue, GDM/Plymouth branding.
 set -euo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-# OS identity
-cat > /etc/os-release <<'EOF'
-PRETTY_NAME="Sloppinux 1.0 (Trixie 13.5)"
+# Build-time knobs written by build.sh (see there). Fallbacks cover running
+# this hook outside build.sh, e.g. a plain `lb build`.
+# shellcheck source=/dev/null
+[ -f /etc/sloppinux-build.env ] && . /etc/sloppinux-build.env
+SLOPPINUX_VERSION="${SLOPPINUX_VERSION:-dev}"
+SLOPPINUX_DEBIAN_VERSION="${SLOPPINUX_DEBIAN_VERSION:-$(cat /etc/debian_version 2>/dev/null || echo 13)}"
+SLOPPINUX_NAME="Sloppinux ${SLOPPINUX_VERSION} (Trixie ${SLOPPINUX_DEBIAN_VERSION})"
+
+# OS identity. ID_LIKE + VERSION_CODENAME keep apt-adjacent tooling (and
+# install scripts that sniff os-release) treating us as Debian trixie.
+cat > /etc/os-release <<EOF
+PRETTY_NAME="${SLOPPINUX_NAME}"
 NAME="Sloppinux"
-VERSION_ID="1.0"
-VERSION="1.0 (Trixie 13.5)"
+VERSION_ID="${SLOPPINUX_VERSION}"
+VERSION="${SLOPPINUX_VERSION} (Trixie ${SLOPPINUX_DEBIAN_VERSION})"
+VERSION_CODENAME=trixie
+DEBIAN_VERSION_FULL=${SLOPPINUX_DEBIAN_VERSION}
 ID=sloppinux
 ID_LIKE=debian
+LOGO=sloppinux
 HOME_URL="https://github.com/slopstack-labs/sloppinux"
 SUPPORT_URL="https://github.com/slopstack-labs/sloppinux/issues"
 BUG_REPORT_URL="https://github.com/slopstack-labs/sloppinux/issues"
 EOF
+# LOGO= is an icon name; make "sloppinux" resolve via the pixmaps fallback
+ln -sf sloppinux-logo.png /usr/share/pixmaps/sloppinux.png
+ln -sf sloppinux-logo.svg /usr/share/pixmaps/sloppinux.svg
 
 # Hostname
 echo "sloppinux" > /etc/hostname
@@ -33,6 +49,12 @@ cat >> /etc/bash.bashrc <<'EOF'
 [ -f /etc/profile.d/sloppinux-llm.sh ] && . /etc/profile.d/sloppinux-llm.sh
 EOF
 
+cat >> /etc/bash.bashrc <<'EOF'
+
+# Sloppinux: typo-forgiving cd and ls
+[ -f /etc/profile.d/sloppinux-fuzzy.sh ] && . /etc/profile.d/sloppinux-fuzzy.sh
+EOF
+
 # GNOME autologin for the live user
 mkdir -p /etc/gdm3
 cat > /etc/gdm3/custom.conf <<'EOF'
@@ -42,6 +64,7 @@ AutomaticLogin=user
 EOF
 
 # Replace the debian-logo.png that desktop-base ships — GDM points to this file
+# (includes.chroot also ships an identical copy, so GDM is right even if this hook is skipped)
 cp /usr/share/pixmaps/sloppinux-logo.png /usr/share/pixmaps/debian-logo.png
 
 # Compile dconf database so GDM picks up the logo
@@ -56,5 +79,5 @@ ShowDelay=0
 EOF
 plymouth-set-default-theme -R sloppinux
 
-echo "Sloppinux 1.0 (Trixie 13.5) — inference-first Linux" > /etc/issue
-echo "Sloppinux 1.0 (Trixie 13.5) — inference-first Linux" > /etc/issue.net
+echo "${SLOPPINUX_NAME} — inference-first Linux" > /etc/issue
+echo "${SLOPPINUX_NAME} — inference-first Linux" > /etc/issue.net

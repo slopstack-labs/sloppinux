@@ -1,0 +1,15 @@
+#!/bin/bash
+# Enables the first-boot post-install survey (sloppinux-install-survey.service).
+# Its own hook so 0016-enable-services stays someone else's problem.
+set -euo pipefail
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# live-build doesn't reliably keep the execute bit from includes.chroot, and
+# a non-executable ExecStart fails with 203/EXEC on every boot forever.
+chmod 0755 /usr/local/bin/sloppinux-install-survey
+chmod 0644 /etc/systemd/system/sloppinux-install-survey.service
+
+# Offline enable = just the multi-user.target.wants symlink. The unit's
+# conditions keep it inert in the live session and on any system that the
+# Calamares fixup didn't leave a survey on.
+systemctl enable sloppinux-install-survey.service

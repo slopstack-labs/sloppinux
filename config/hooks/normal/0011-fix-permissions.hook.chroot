@@ -4,10 +4,10 @@
 set -euo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-chmod +x \
-    /usr/local/bin/ai \
-    /usr/local/bin/sloppinux-pick-model \
-    /usr/local/bin/sloppiler 2>/dev/null || true
+# Everything in /usr/local/bin is meant to be run, so don't maintain a list
+# that silently rots every time a new tool lands in includes.chroot.
+# -type f skips symlinks; chmod +x only adds bits, so setuid survives.
+find /usr/local/bin -type f -exec chmod +x {} +
 
 # sloppinux-exec is built by 0012 hook — re-assert setuid in case something stripped it
 chown root:root /usr/local/bin/sloppinux-exec 2>/dev/null || true

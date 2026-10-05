@@ -1,10 +1,12 @@
 [Desktop Entry]
 Type=Application
 Name=Install Sloppinux
-Comment=Install Sloppinux to disk
-Exec=calamares
+Comment=Install Sloppinux to disk (live session only)
+TryExec=calamares
+Exec=/usr/local/bin/sloppinux-installer-autostart
 Icon=/usr/share/pixmaps/sloppinux-logo.png
 Terminal=false
-Categories=System;
+NoDisplay=true
 OnlyShowIn=GNOME;
 X-GNOME-Autostart-enabled=true
+X-GNOME-Autostart-Delay=3

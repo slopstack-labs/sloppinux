@@ -1,0 +1,4 @@
+# sloppiler --optimistic assembles with nasm and links with ld (binutils) —
+# needed now that sloppiler-cc is the system cc (0060-sloppiler-cc)
+nasm
+binutils

@@ -1,0 +1,47 @@
+#!/bin/bash
+# Promotes sloppiler to the system C compiler: /usr/local/bin/cc and
+# /usr/local/bin/gcc become symlinks to sloppiler-cc, which sits ahead of
+# /usr/bin on PATH. /usr/bin/gcc itself is untouched, and sloppiler-cc hands
+# every build-system-shaped invocation (-c, -E, --version, probes, ...) to it.
+#
+# ORDERING: this must stay numbered after every hook that compiles real C
+# during the build (0012-sloppinux-exec, 0050-*). Anything that runs after
+# this hook and types `gcc foo.c -o foo` gets an LLM, not a compiler.
+#
+# Plain symlinks rather than update-alternatives: Debian's cc alternative
+# lives in /usr/bin and is shared with clang & co; shadowing in /usr/local
+# leaves the package-managed toolchain exactly as apt expects it.
+set -euo pipefail
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+WRAPPER=/usr/local/bin/sloppiler-cc
+
+for need in /usr/bin/gcc "$WRAPPER"; do
+    if [[ ! -e "$need" ]]; then
+        echo "0060-sloppiler-cc: $need missing" >&2
+        exit 1
+    fi
+done
+for tool in nasm ld; do
+    command -v "$tool" >/dev/null || { echo "0060-sloppiler-cc: $tool not installed (31-sloppiler-cc.list)" >&2; exit 1; }
+done
+
+# live-build doesn't reliably keep the execute bit from includes.chroot.
+chmod 0755 "$WRAPPER"
+ln -sf sloppiler-cc /usr/local/bin/cc
+ln -sf sloppiler-cc /usr/local/bin/gcc
+
+# Self-test the transparent paths: a build system asking questions or
+# compiling objects must still reach the real gcc, and the escape hatch must
+# produce a working binary. No ollama runs in the chroot, so nothing here
+# can wander off into inference.
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+gcc --version | head -n 1 | grep -q '^gcc' \
+    || { echo "0060-sloppiler-cc: 'gcc --version' did not reach the real gcc" >&2; exit 1; }
+printf 'int main(void) { return 0; }\n' > "$tmp/probe.c"
+cc -c "$tmp/probe.c" -o "$tmp/probe.o"
+cc -o "$tmp/probe" "$tmp/probe.o"
+SLOPPILER_CC_REAL=1 gcc -o "$tmp/probe2" "$tmp/probe.c"
+"$tmp/probe" && "$tmp/probe2"
+echo "==> sloppiler-cc: cc/gcc → $WRAPPER (real compiler stays at /usr/bin/gcc)"

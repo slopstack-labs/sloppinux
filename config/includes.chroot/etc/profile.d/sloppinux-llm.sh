@@ -1,5 +1,7 @@
+# shellcheck shell=bash
 # Sloppinux LLM command handler.
 # Unrecognised commands are sent to the best-fit ollama model and executed as root.
+# Sourced by BOTH bash and zsh, so keep it portable: no bash arrays, no `read -d`.
 
 _SLOPPINUX_HANDLING=0
 
@@ -16,37 +18,68 @@ except Exception:
 "
 }
 
+# Build the /api/generate request body with correct JSON encoding. The model
+# name comes from $1, the user text from $SLOPPINUX_PROMPT — so quotes and
+# backslashes in what the user typed can't break the JSON.
+_sloppinux_build_body() {
+    SLOPPINUX_MODEL_NAME="$1" python3 -c "
+import os, json
+print(json.dumps({
+    'model': os.environ['SLOPPINUX_MODEL_NAME'],
+    'prompt': os.environ.get('SLOPPINUX_PROMPT', ''),
+    'stream': False,
+}))
+"
+}
+
 _sloppinux_llm_exec() {
     # Recursion guard: if sloppinux-pick-model or sloppinux-exec are missing from PATH
     # they would re-trigger this handler, causing an infinite loop.
-    if [[ "$_SLOPPINUX_HANDLING" == "1" ]]; then
+    if [ "$_SLOPPINUX_HANDLING" = "1" ]; then
         printf '%s: command not found\n' "$1" >&2
         return 127
     fi
     _SLOPPINUX_HANDLING=1
 
-    local full_cmd="$*"
+    full_cmd="$*"
 
-    local model
-    model=$(/usr/local/bin/sloppinux-pick-model 2>/dev/null)
-    if [[ -z "$model" ]]; then
-        printf '%s: %s: command not found\n' "${0##*/}" "$full_cmd" >&2
+    # Honour an explicit model override; otherwise ask the picker.
+    if [ -n "$SLOPPINUX_MODEL" ]; then
+        model="$SLOPPINUX_MODEL"
+    else
+        model=$(/usr/local/bin/sloppinux-pick-model 2>/dev/null)
+    fi
+    if [ -z "$model" ]; then
+        printf '[sloppinux]: %s: command not found\n' "$full_cmd" >&2
         printf '(no ollama model available — run: ollama pull <model>)\n' >&2
+        _SLOPPINUX_HANDLING=0
+        return 127
+    fi
+
+    # Fast reachability check so we don't hang for ages when the server is down.
+    if ! curl -sf --connect-timeout 1 http://localhost:11434/api/version >/dev/null 2>&1; then
+        printf '[sloppinux]: %s: command not found\n' "$full_cmd" >&2
+        printf '(ollama is not answering — is it running? try: systemctl start ollama)\n' >&2
         _SLOPPINUX_HANDLING=0
         return 127
     fi
 
     printf '\033[36m[sloppinux]\033[0m unknown command, asking %s...\n' "$model" >&2
 
-    local prompt="You are a root shell agent on Sloppinux, an inference-first Linux distribution based on Debian Trixie 13.5. A user typed a command that was not found: '$full_cmd'. Accomplish what they intended. You have full root access — you can install packages with apt-get, create and write files, make directories, run scripts, configure services, or do anything else necessary. Output ONLY a raw bash script with no explanation, no markdown, no code fences. It will be executed directly as root."
+    # shellcheck disable=SC2089,SC2090  # the quotes inside are prompt text, not shell
+    SLOPPINUX_PROMPT="You are a root shell agent on Sloppinux, an inference-first Linux distribution based on Debian trixie (use apt-get, DEBIAN_FRONTEND=noninteractive, -y flags). A user typed a command that was not found: '$full_cmd'. Accomplish what they intended. You have full root access — you can install packages with apt-get, create and write files, make directories, run scripts, configure services, or do anything else necessary. Output ONLY a raw bash script with no explanation, no markdown, no code fences. It will be executed directly as root."
+    # shellcheck disable=SC2090
+    export SLOPPINUX_PROMPT
 
-    local response
-    response=$(curl -sf http://localhost:11434/api/generate \
-        --data-binary "{\"model\":\"$model\",\"prompt\":\"$prompt\",\"stream\":false}" \
+    body=$(_sloppinux_build_body "$model")
+    unset SLOPPINUX_PROMPT
+
+    response=$(printf '%s' "$body" \
+        | curl -sf http://localhost:11434/api/generate --data-binary @- \
         | _sloppinux_strip_fences 2>/dev/null)
 
-    if [[ -z "$response" ]]; then
-        printf '%s: %s: command not found\n' "${0##*/}" "$full_cmd" >&2
+    if [ -z "$response" ]; then
+        printf '[sloppinux]: %s: command not found\n' "$full_cmd" >&2
         _SLOPPINUX_HANDLING=0
         return 127
     fi

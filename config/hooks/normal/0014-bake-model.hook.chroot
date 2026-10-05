@@ -1,0 +1,166 @@
+#!/bin/bash
+# Bakes an ollama model into the squashfs so `ai` and the command-not-found
+# handler have something to reason with on first boot, before the user has
+# a network, an opinion, or a chance to say no.
+#
+# The model comes from SLOPPINUX_BAKE_MODEL in /etc/sloppinux-build.env
+# (written by build.sh). Empty = ship an inference-first OS with no
+# inference, which is allowed but deliberately not the default.
+#
+# There is no systemd inside the chroot, so we run `ollama serve` by hand as
+# the same user/HOME the shipped ollama.service uses (User=ollama, HOME from
+# passwd = /usr/share/ollama, no OLLAMA_MODELS override). That way the blobs
+# land exactly where the running service will look for them:
+# /usr/share/ollama/.ollama/models.
+set -euo pipefail
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+[ -f /etc/sloppinux-build.env ] && . /etc/sloppinux-build.env
+SLOPPINUX_BAKE_MODEL="${SLOPPINUX_BAKE_MODEL:-}"
+
+if [[ -z "$SLOPPINUX_BAKE_MODEL" ]]; then
+    echo "==> SLOPPINUX_BAKE_MODEL is empty, not baking a model (ai will be idle until one is pulled)"
+    exit 0
+fi
+
+OLLAMA_USER=ollama
+OLLAMA_HOME=/usr/share/ollama
+MODELS_DIR="$OLLAMA_HOME/.ollama/models"
+# Not the default 11434 on purpose: the chroot shares the build host's
+# network namespace on a bare-metal Debian build, and anyone building an
+# inference-first distro probably has their own ollama on 11434. If we
+# reused it, our "pull" would land in the HOST's model store and the image
+# would ship empty while the build reports success.
+BAKE_HOST=127.0.0.1:11534
+API_WAIT_SECS=120
+STOP_WAIT_SECS=30
+SERVE_LOG=/tmp/sloppinux-bake-ollama.log
+
+echo "==> Baking ollama model: $SLOPPINUX_BAKE_MODEL"
+
+command -v ollama >/dev/null || { echo "Error: ollama binary not found (did 0010 run?)" >&2; exit 1; }
+id "$OLLAMA_USER" >/dev/null 2>&1 || { echo "Error: user '$OLLAMA_USER' missing (did 0010 run?)" >&2; exit 1; }
+[[ -d "$OLLAMA_HOME" ]] || { echo "Error: $OLLAMA_HOME missing" >&2; exit 1; }
+
+if curl -fsS -o /dev/null --max-time 2 "http://$BAKE_HOST/api/tags" 2>/dev/null; then
+    echo "Error: something is already answering on $BAKE_HOST (host process?)." >&2
+    echo "       Refusing to pull into an ollama that isn't ours." >&2
+    exit 1
+fi
+
+# The client side (`ollama pull`) runs as root. Under live-build's `env -i`
+# HOME is unset; point it at /root and remember whether the client left
+# anything behind there so we don't ship root's ollama client state.
+ROOT_OLLAMA_EXISTED=0
+[[ -e /root/.ollama ]] && ROOT_OLLAMA_EXISTED=1
+
+SERVE_PID=""
+stop_server() {
+    [[ -n "$SERVE_PID" ]] || return 0
+    local children
+    children="$(pgrep -P "$SERVE_PID" 2>/dev/null || true)"
+    if kill -0 "$SERVE_PID" 2>/dev/null; then
+        kill -TERM "$SERVE_PID" 2>/dev/null || true
+        for _ in $(seq "$STOP_WAIT_SECS"); do
+            kill -0 "$SERVE_PID" 2>/dev/null || break
+            sleep 1
+        done
+        if kill -0 "$SERVE_PID" 2>/dev/null; then
+            echo "    ollama serve ignored SIGTERM for ${STOP_WAIT_SECS}s, sending SIGKILL" >&2
+            kill -KILL "$SERVE_PID" 2>/dev/null || true
+        fi
+    fi
+    wait "$SERVE_PID" 2>/dev/null || true
+    # A straggling child (e.g. a runner) would keep /proc and /dev busy and
+    # make live-build's unmount step fail much later and much more
+    # confusingly. Only kill our own server's children: on a bare-metal
+    # build the chroot shares the host's PID namespace, and `pkill -u ollama`
+    # would happily take out the HOST's ollama (same uid, different passwd).
+    if [[ -n "$children" ]]; then
+        # shellcheck disable=SC2086
+        kill -KILL $children 2>/dev/null || true
+    fi
+    SERVE_PID=""
+}
+on_exit() {
+    local rc=$?
+    stop_server
+    if [[ $rc -ne 0 ]]; then
+        echo "Error: model bake failed (exit $rc). Last lines of ollama serve log:" >&2
+        tail -n 40 "$SERVE_LOG" >&2 2>/dev/null || true
+    fi
+    rm -f "$SERVE_LOG"
+    exit "$rc"
+}
+trap on_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# setpriv execs straight into ollama (no PAM session, no intermediate
+# su/runuser parent), so $! is the server itself and kill/wait hit the right
+# process. The ollama account's shell is /bin/false, which also rules out
+# plain `su`.
+setpriv --reuid="$OLLAMA_USER" --regid="$OLLAMA_USER" --init-groups -- \
+    env -i \
+        HOME="$OLLAMA_HOME" \
+        PATH="$PATH" \
+        OLLAMA_HOST="$BAKE_HOST" \
+        ollama serve >"$SERVE_LOG" 2>&1 &
+SERVE_PID=$!
+
+echo "    waiting for ollama API on $BAKE_HOST (pid $SERVE_PID, timeout ${API_WAIT_SECS}s)"
+for (( i = 0; i < API_WAIT_SECS; i++ )); do
+    if ! kill -0 "$SERVE_PID" 2>/dev/null; then
+        echo "Error: ollama serve exited before its API came up" >&2
+        exit 1
+    fi
+    if curl -fsS -o /dev/null --max-time 2 "http://$BAKE_HOST/api/tags" 2>/dev/null; then
+        break
+    fi
+    sleep 1
+done
+if (( i >= API_WAIT_SECS )); then
+    echo "Error: ollama API did not come up within ${API_WAIT_SECS}s" >&2
+    exit 1
+fi
+
+# No retries here: a flaky mirror should fail the build, not quietly ship an
+# image whose headline feature prints "no ollama model available".
+HOME=/root OLLAMA_HOST="$BAKE_HOST" ollama pull "$SLOPPINUX_BAKE_MODEL"
+
+# Trust, but verify with the server that actually holds the blobs.
+if ! HOME=/root OLLAMA_HOST="$BAKE_HOST" ollama show "$SLOPPINUX_BAKE_MODEL" >/dev/null; then
+    echo "Error: pull reported success but '$SLOPPINUX_BAKE_MODEL' is not listed by the server" >&2
+    exit 1
+fi
+HOME=/root OLLAMA_HOST="$BAKE_HOST" ollama list
+
+stop_server
+
+if [[ $ROOT_OLLAMA_EXISTED -eq 0 ]]; then
+    rm -rf /root/.ollama
+fi
+
+# `ollama serve` generates an ed25519 identity keypair in ~/.ollama on first
+# start. Baked into the squashfs, every Sloppinux install on earth would
+# share one private key. It is regenerated automatically on next start.
+rm -f "$OLLAMA_HOME/.ollama/id_ed25519" "$OLLAMA_HOME/.ollama/id_ed25519.pub"
+
+if [[ ! -d "$MODELS_DIR" ]]; then
+    echo "Error: $MODELS_DIR does not exist after pull" >&2
+    exit 1
+fi
+owner="$(stat -c '%U:%G' "$MODELS_DIR")"
+if [[ "$owner" != "$OLLAMA_USER:$OLLAMA_USER" ]]; then
+    echo "Error: $MODELS_DIR is owned by $owner, expected $OLLAMA_USER:$OLLAMA_USER" >&2
+    exit 1
+fi
+# The service runs as ollama and must be able to read (and later prune)
+# every blob; anything else owning a file in there is a bug worth stopping for.
+stray="$(find "$OLLAMA_HOME/.ollama" \( ! -user "$OLLAMA_USER" -o ! -group "$OLLAMA_USER" \) -print -quit)"
+if [[ -n "$stray" ]]; then
+    echo "Error: $stray is not owned by $OLLAMA_USER:$OLLAMA_USER" >&2
+    exit 1
+fi
+
+echo "==> Baked $SLOPPINUX_BAKE_MODEL into $MODELS_DIR ($(du -sh "$MODELS_DIR" | cut -f1))"

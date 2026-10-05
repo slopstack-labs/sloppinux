@@ -1,5 +1,10 @@
-# synced binaries (pulled from sibling repos at build time)
+# developer override: build.sh copies ../sloppiler/sloppiler here when it
+# exists; otherwise the 0031 hook downloads the pinned release
 config/includes.chroot/usr/local/bin/sloppiler
+
+# python bytecode — would otherwise ship inside the image
+__pycache__/
+*.pyc
 
 # live-build build artifacts
 binary/
@@ -7,6 +12,7 @@ cache/
 chroot/
 .build/
 *.iso
+*.iso.sha256
 *.img
 *.log
 config/binary

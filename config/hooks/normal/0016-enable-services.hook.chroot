@@ -1,0 +1,26 @@
+#!/bin/bash
+# Enables Sloppinux's own systemd units shipped via includes.chroot.
+# Kept separate from 0010/0011 so ownership of those stays untouched.
+set -euo pipefail
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# live-build does not reliably preserve the execute bit from includes.chroot
+# (same reason 0011 exists), and a non-executable ExecStart fails with
+# 203/EXEC on every boot forever.
+chmod 0755 /usr/local/bin/sloppinux-model-autopull
+chmod 0644 /etc/systemd/system/sloppinux-model-autopull.service
+
+# Offline enable (no systemd running in the chroot) just creates the
+# multi-user.target.wants symlink. The unit itself refuses to run in the
+# live session, so this only ever fires on installed systems.
+systemctl enable sloppinux-model-autopull.service
+
+# Stochastic cron. Same execute-bit caveat as above for the script; the
+# shipped default table has one harmless entry (a motivational note in
+# /var/lib/sloppinux). Enable the TIMER, not the service: the timer decides
+# when to ask, the model decides whether to act. Unlike the autopull this
+# runs in the live session too, but not before OnBootSec (10 min) has passed.
+chmod 0755 /usr/local/bin/slopcron
+chmod 0644 /etc/systemd/system/slopcron.service /etc/systemd/system/slopcron.timer
+chmod 0644 /etc/sloppinux/slopcrontab.json
+systemctl enable slopcron.timer

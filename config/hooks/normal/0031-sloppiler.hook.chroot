@@ -1,0 +1,26 @@
+#!/bin/bash
+# Downloads the sloppiler pre-built binary from the GitHub release, unless
+# build.sh already synced a local developer build into /usr/local/bin.
+set -euo pipefail
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# Pinned release. The project doesn't publish checksum files, so the sha256
+# is GitHub's own asset digest (`digest` field in the releases API) — bump
+# both together. All releases so far are prereleases, so .../releases/latest
+# 404s; list them instead:
+#   curl -s https://api.github.com/repos/slopstack-labs/sloppiler/releases
+VERSION="v0.1.0-agentic-alignment-alpha.3"
+RELEASE_URL="https://github.com/slopstack-labs/sloppiler/releases/download/${VERSION}/sloppiler-linux-amd64"
+SHA256="f8716a6436ec8705a3dd1b832082b3701a4688fc20ab9f5e1493f9660f27e510"
+
+if [[ -f /usr/local/bin/sloppiler ]]; then
+    echo "==> sloppiler: keeping local developer build synced in by build.sh"
+    chmod +x /usr/local/bin/sloppiler
+    exit 0
+fi
+
+echo "==> Downloading sloppiler ${VERSION}"
+curl -fsSL --retry 3 "$RELEASE_URL" -o /tmp/sloppiler
+echo "${SHA256}  /tmp/sloppiler" | sha256sum -c -
+install -m 0755 /tmp/sloppiler /usr/local/bin/sloppiler
+rm -f /tmp/sloppiler

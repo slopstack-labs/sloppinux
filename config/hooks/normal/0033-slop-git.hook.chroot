@@ -1,0 +1,46 @@
+#!/bin/bash
+# Installs slop-git (narrative-driven version control) into its own venv at
+# /opt/slop-git and exposes it as /usr/local/bin/slop-git. The /usr/local/bin/git
+# wrapper (includes.chroot) routes bare `git commit` and conflicted
+# `git merge <branch>` through it; everything else stays plain git.
+#
+# A venv instead of `pip install` into the system: Debian's python is
+# externally managed (PEP 668), and slop-git's one runtime extra (psutil, for
+# the biometrics) has no business fighting apt over /usr/lib/python3.
+set -euo pipefail
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# Not on PyPI despite what its README says (pypi.org/pypi/slop-git → 404), so
+# pin a commit instead. The commit sha *is* the integrity check here — pip
+# fetches exactly that tree or fails. Bump it after reading the diff:
+#   curl -s https://api.github.com/repos/slopstack-labs/slop-git/commits?per_page=1
+SLOP_GIT_REPO="https://github.com/slopstack-labs/slop-git"
+SLOP_GIT_SHA="b070503feda6fdc5957dd0797cc27cb24f0599e6"
+VENV=/opt/slop-git
+
+echo "==> Installing slop-git @ ${SLOP_GIT_SHA:0:12} into $VENV"
+rm -rf "$VENV"
+python3 -m venv "$VENV"
+"$VENV/bin/pip" install --no-cache-dir --disable-pip-version-check --quiet --upgrade pip
+# git+https needs /usr/bin/git, which the image ships anyway (Oh My Zsh).
+# Retry: one flaky GitHub fetch shouldn't cost a 40-minute build.
+for attempt in 1 2 3; do
+    if "$VENV/bin/pip" install --no-cache-dir --disable-pip-version-check \
+        "slop-git[biometric] @ git+${SLOP_GIT_REPO}@${SLOP_GIT_SHA}"; then
+        break
+    fi
+    if [[ $attempt -eq 3 ]]; then
+        echo "0033-slop-git: pip install failed 3 times" >&2
+        exit 1
+    fi
+    echo "    attempt $attempt failed, retrying in 5s"
+    sleep 5
+done
+
+# Fail the build rather than ship a wrapper pointing at nothing.
+"$VENV/bin/slop-git" help >/dev/null
+
+ln -sf "$VENV/bin/slop-git" /usr/local/bin/slop-git
+# 0011 already ran, so re-assert the wrapper's execute bit here — a
+# non-executable /usr/local/bin/git would be skipped by PATH lookup at best.
+chmod 0755 /usr/local/bin/git

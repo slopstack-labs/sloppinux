@@ -1,0 +1,96 @@
+#!/bin/bash
+# sloppinux-welcome — first-login stakeholder onboarding touchpoint.
+#
+# Once per user (marker: ~/.config/sloppinux/welcomed) this sends a desktop
+# notification announcing the resident model and the house rules. It runs
+# from XDG autostart in the background: it must never block login and must
+# never error visibly, so everything below is best-effort and silent.
+
+marker_dir="${XDG_CONFIG_HOME:-$HOME/.config}/sloppinux"
+marker="$marker_dir/welcomed"
+[ -e "$marker" ] && exit 0
+
+OLLAMA_URL="http://localhost:11434"
+ICON=/usr/share/pixmaps/sloppinux-logo.png
+
+# ── Who's driving? Ask ollama, giving it ~20s to wake up. ──────────────
+model_names() {
+    local json
+    json=$(curl -fsS --max-time 2 "$OLLAMA_URL/api/tags" 2>/dev/null) || return 1
+    if command -v jq >/dev/null 2>&1; then
+        printf '%s' "$json" | jq -r '[.models[]?.name] | join(", ")' 2>/dev/null
+    else
+        printf '%s' "$json" | python3 -c \
+            'import json,sys; print(", ".join(m["name"] for m in json.load(sys.stdin).get("models", [])))' \
+            2>/dev/null
+    fi
+}
+
+models=""
+for _ in $(seq 1 10); do
+    if models=$(model_names) && [ -n "$models" ]; then
+        break
+    fi
+    models=""
+    sleep 2
+done
+[ -n "$models" ] || models="model loading (the substrate is still warming up)"
+
+summary="Welcome to Sloppinux 🦝"
+body="Inference layer: $models
+Unknown commands are routed to the AI and executed as root. This is a feature.
+Run ai \"anything\" to delegate intent agentically.
+Feed the raccoon in the top bar (drag a file onto it), or it improvises."
+
+# ── Installed systems: append the post-install survey's verdict. ──────
+# sloppinux-install-survey.service may still be deliberating on the very
+# first login, so give it up to 30s — but only if there is a survey to
+# score (never on the live session) and no score yet.
+SURVEY=/var/lib/sloppinux/install-survey.txt
+SCORE=/var/lib/sloppinux/install-score.txt
+if [ -f "$SURVEY" ] && [ ! -s "$SCORE" ]; then
+    for _ in $(seq 1 15); do
+        [ -s "$SCORE" ] && break
+        sleep 2
+    done
+fi
+if [ -s "$SCORE" ]; then
+    score=$(sed -n '1s/^score:[[:space:]]*//p' "$SCORE" 2>/dev/null)
+    verdict=$(sed -n '2,$p' "$SCORE" 2>/dev/null | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+    [ -n "$score" ] && body="$body
+Install score: $score — $verdict"
+fi
+
+# ── Deliver. notify-send isn't on the image, so speak D-Bus directly. ──
+# gdbus parses each argument as GVariant text: quote strings ourselves.
+gv_str() {
+    local s=$1
+    s=${s//\\/\\\\}
+    s=${s//\"/\\\"}
+    s=${s//$'\n'/\\n}
+    printf '"%s"' "$s"
+}
+
+sent=0
+if command -v gdbus >/dev/null 2>&1; then
+    gdbus call --session \
+        --dest org.freedesktop.Notifications \
+        --object-path /org/freedesktop/Notifications \
+        --method org.freedesktop.Notifications.Notify \
+        "$(gv_str Sloppinux)" 0 "$(gv_str "$ICON")" \
+        "$(gv_str "$summary")" "$(gv_str "$body")" \
+        '@as []' '@a{sv} {}' 20000 >/dev/null 2>&1 && sent=1
+fi
+if [ "$sent" = 0 ] && command -v notify-send >/dev/null 2>&1; then
+    notify-send -a Sloppinux -i "$ICON" "$summary" "$body" >/dev/null 2>&1 && sent=1
+fi
+
+# Mark as welcomed before any (blocking) dialog fallback so a crash or
+# logout mid-dialog doesn't re-onboard the same stakeholder forever.
+mkdir -p "$marker_dir" 2>/dev/null && : > "$marker" 2>/dev/null
+
+if [ "$sent" = 0 ] && command -v zenity >/dev/null 2>&1; then
+    zenity --info --no-wrap --no-markup --title="$summary" --text="$body" >/dev/null 2>&1 &
+fi
+
+exit 0

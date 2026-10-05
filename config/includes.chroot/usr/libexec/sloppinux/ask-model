@@ -1,0 +1,94 @@
+#!/usr/bin/env python3
+"""
+Shared "ask the local ollama model one question" helper for Sloppinux.
+
+    stdin  = the prompt text
+    argv   = optional model name (overrides $SLOPPINUX_MODEL / auto-pick)
+    stdout = the model's response, with any markdown code fences stripped
+    exit   = 0 with text on stdout on success; 1 with NO stdout on failure
+
+Everything that asks the model for a blob of text (a path guess, a man page,
+a hallucinated CLI tool) funnels through here, so the JSON body is built the
+safe way once -- json.dumps, never string interpolation -- and the fence
+stripping lives in exactly one place. Mirrors the reachability / model-pick
+philosophy of /etc/profile.d/sloppinux-llm.sh, but as a standalone binary so
+the shell wrappers don't each reimplement it.
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+import urllib.request
+
+OLLAMA_URL = "http://localhost:11434"
+
+
+def pick_model(explicit):
+    """Model precedence: explicit argv, then $SLOPPINUX_MODEL, then the picker."""
+    if explicit:
+        return explicit
+    override = os.environ.get("SLOPPINUX_MODEL")
+    if override:
+        return override
+    try:
+        r = subprocess.run(
+            ["/usr/local/bin/sloppinux-pick-model"],
+            capture_output=True, text=True, timeout=5,
+        )
+        name = r.stdout.strip()
+        if name:
+            return name
+    except Exception:
+        pass
+    return None
+
+
+def reachable():
+    """1 s connect-timeout probe so we fail fast when ollama is down."""
+    try:
+        urllib.request.urlopen(f"{OLLAMA_URL}/api/version", timeout=1)
+        return True
+    except Exception:
+        return False
+
+
+def strip_fences(text):
+    text = text.strip()
+    text = re.sub(r'^[ \t]*```[a-zA-Z0-9_+-]*[ \t]*\n?', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^[ \t]*```[ \t]*$', '', text, flags=re.MULTILINE)
+    return text.strip()
+
+
+def main():
+    model = pick_model(sys.argv[1] if len(sys.argv) > 1 else None)
+    if not model:
+        sys.exit(1)
+    if not reachable():
+        sys.exit(1)
+
+    prompt = sys.stdin.read()
+    body = json.dumps({"model": model, "prompt": prompt, "stream": False}).encode()
+
+    try:
+        req = urllib.request.Request(
+            f"{OLLAMA_URL}/api/generate",
+            data=body,
+            headers={"Content-Type": "application/json"},
+        )
+        # Short connect, generous read: slow-CPU inference can take a while.
+        resp = urllib.request.urlopen(req, timeout=120)
+        obj = json.loads(resp.read())
+    except Exception:
+        sys.exit(1)
+
+    text = strip_fences(obj.get("response", ""))
+    if not text:
+        sys.exit(1)
+    sys.stdout.write(text)
+    if not text.endswith("\n"):
+        sys.stdout.write("\n")
+
+
+if __name__ == "__main__":
+    main()

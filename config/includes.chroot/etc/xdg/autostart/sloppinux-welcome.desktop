@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Sloppinux Welcome
+Comment=First-login onboarding for the inference-first desktop
+Exec=/usr/local/bin/sloppinux-welcome
+Icon=/usr/share/pixmaps/sloppinux-logo.png
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
+X-GNOME-Autostart-Delay=5

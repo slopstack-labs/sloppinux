@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# sloppinux-status — a quick vibe check on your inference-first machine.
+# Read-only: it looks, it reports, it touches nothing. (For once.)
+
+CYAN=$'\033[36m'
+YELLOW=$'\033[33m'
+GREEN=$'\033[32m'
+RED=$'\033[31m'
+BOLD=$'\033[1m'
+RESET=$'\033[0m'
+
+OLLAMA_URL="http://localhost:11434"
+
+# --- Distro version -------------------------------------------------------
+version="unknown"
+if [ -r /etc/os-release ]; then
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    version="${PRETTY_NAME:-${NAME:-unknown} ${VERSION:-}}"
+fi
+
+printf '%s%s=== Sloppinux status ===%s\n' "$BOLD" "$CYAN" "$RESET"
+printf '%sVersion:%s %s\n' "$BOLD" "$RESET" "$version"
+
+# --- Free RAM -------------------------------------------------------------
+ram_line=$(awk '/^MemAvailable:/ {printf "%.1f GB free", $2/1024/1024}' /proc/meminfo 2>/dev/null)
+printf '%sRAM:%s     %s\n' "$BOLD" "$RESET" "${ram_line:-unknown}"
+
+# --- Ollama server --------------------------------------------------------
+if curl -sf --connect-timeout 1 "$OLLAMA_URL/api/version" >/dev/null 2>&1; then
+    printf '%sOllama:%s  %sup%s (answering on %s)\n' "$BOLD" "$RESET" "$GREEN" "$RESET" "$OLLAMA_URL"
+    server_up=1
+else
+    printf '%sOllama:%s  %sdown%s (not answering — try: systemctl start ollama)\n' "$BOLD" "$RESET" "$RED" "$RESET"
+    server_up=0
+fi
+
+# --- Model list + chosen model -------------------------------------------
+if [ "$server_up" = "1" ]; then
+    printf '\n%sModels:%s\n' "$BOLD" "$RESET"
+    if ! /usr/local/bin/sloppinux-pick-model --list 2>/dev/null; then
+        printf '  (none pulled yet — run: ollama pull <model>)\n'
+    fi
+
+    chosen=$(/usr/local/bin/sloppinux-pick-model 2>/dev/null)
+    if [ -n "$chosen" ]; then
+        printf '\n%sWould run:%s %s%s%s\n' "$BOLD" "$RESET" "$YELLOW" "$chosen" "$RESET"
+    else
+        printf '\n%sWould run:%s %s(nothing — no model available)%s\n' "$BOLD" "$RESET" "$RED" "$RESET"
+    fi
+else
+    printf '\n%s(start ollama to see models and the model it would pick.)%s\n' "$YELLOW" "$RESET"
+fi

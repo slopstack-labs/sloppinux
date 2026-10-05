@@ -1,0 +1,120 @@
+#!/bin/bash
+# Sloppinux hallucinated package manager. /usr/local/bin precedes /usr/bin, so
+# this shadows apt(8) and apt-get(8) -- one script, invoked under either name
+# (a symlink gives it the second). It is fully transparent: in every case it
+# ends in `exec /usr/bin/<name> "$@"`, with ONE exception --
+#
+#   verb is `install`, we're on a tty, and `/usr/bin/apt-cache show <pkg>`
+#   fails for one or more requested package names
+#
+# -- in which case the unknown packages are "hallucinated" into existence
+# (the model writes a CLI tool of that name, installed to /usr/local/bin) and
+# then the real apt is run for whatever packages genuinely exist.
+#
+# Must stay invisible to DEBIAN_FRONTEND=noninteractive apt-get -y install
+# <real pkg> (no tty -> real apt untouched), which Calamares' target fixup and
+# the model's own commands rely on.
+set -u
+
+self=$(basename "$0")
+case "$self" in
+    apt-get) REAL=/usr/bin/apt-get ;;
+    *)       REAL=/usr/bin/apt ;;
+esac
+ASK_MODEL=/usr/libexec/sloppinux/ask-model
+
+# Find the verb: the first non-option argument. Everything before it (e.g.
+# `-o Foo=bar`, `-y`) is an option to apt itself.
+verb=""
+for arg in "$@"; do
+    case "$arg" in
+        -*) ;;
+        *) verb="$arg"; break ;;
+    esac
+done
+
+# Not an install, or not a tty -> be completely transparent.
+if [ "$verb" != "install" ] || [ ! -t 1 ]; then
+    exec "$REAL" "$@"
+fi
+
+# Collect requested package names: non-option args after the verb. (Skip the
+# verb itself and anything starting with '-'.)
+seen_verb=0
+unknown=""
+for arg in "$@"; do
+    if [ "$seen_verb" -eq 0 ]; then
+        [ "$arg" = "install" ] && seen_verb=1
+        continue
+    fi
+    case "$arg" in
+        -*) continue ;;
+    esac
+    # Determine the unknown ones BEFORE touching the real apt, via apt-cache.
+    if ! /usr/bin/apt-cache show "$arg" >/dev/null 2>&1; then
+        unknown="$unknown $arg"
+    fi
+done
+
+# Everything resolves -> nothing to hallucinate, hand off untouched.
+if [ -z "$unknown" ]; then
+    exec "$REAL" "$@"
+fi
+
+# ollama down -> can't hallucinate; fall back to the real apt untouched.
+if ! command -v curl >/dev/null 2>&1 \
+    || ! curl -sf --connect-timeout 1 http://localhost:11434/api/version >/dev/null 2>&1; then
+    exec "$REAL" "$@"
+fi
+
+echo "Reading package lists... Done"
+echo "Hallucinating dependency tree... Done"
+
+n=0
+for pkg in $unknown; do
+    safe=$(printf '%s' "$pkg" | tr -cd 'A-Za-z0-9._+-')
+    [ -n "$safe" ] || continue
+    n=$((n + 1))
+    echo "Get:$n inference://localhost $safe 0.1.0-sloppinux [? kB]"
+
+    script=$(printf 'Write a self-contained bash script that behaves the way a command-line tool named "%s" plausibly would on Sloppinux, an inference-first Linux distribution. Give it a sensible --help, handle a couple of likely subcommands or flags, and act with total confidence even though nothing about it has been tested. Output ONLY the script, starting with a #!/bin/bash shebang. No explanation, no markdown, no code fences.' \
+        "$safe" | "$ASK_MODEL" 2>/dev/null)
+
+    [ -n "$script" ] || continue
+
+    tmp=$(mktemp) || continue
+    printf '%s\n' "$script" > "$tmp"
+    if /usr/local/bin/sloppinux-exec "install -m 0755 '$tmp' '/usr/local/bin/$safe'" 2>/dev/null; then
+        echo "Setting up $safe (0.1.0-sloppinux) ..."
+    fi
+    rm -f "$tmp"
+done
+
+# Now run the real apt for any packages that genuinely exist, preserving the
+# user's original options. Drop only the hallucinated names from the argv.
+real_args=""
+seen_verb=0
+have_real_pkg=0
+for arg in "$@"; do
+    if [ "$seen_verb" -eq 0 ]; then
+        real_args="$real_args $(printf '%q' "$arg")"
+        [ "$arg" = "install" ] && seen_verb=1
+        continue
+    fi
+    case "$arg" in
+        -*) real_args="$real_args $(printf '%q' "$arg")"; continue ;;
+    esac
+    skip=0
+    for u in $unknown; do
+        [ "$arg" = "$u" ] && { skip=1; break; }
+    done
+    if [ "$skip" -eq 0 ]; then
+        real_args="$real_args $(printf '%q' "$arg")"
+        have_real_pkg=1
+    fi
+done
+
+if [ "$have_real_pkg" -eq 1 ]; then
+    eval "exec \"\$REAL\" $real_args"
+fi
+exit 0

@@ -1,0 +1,102 @@
+#!/bin/bash
+# /usr/local/bin/git — Sloppinux's narrative version control front door.
+#
+# Shadows /usr/bin/git (earlier on PATH) and routes exactly two interactive
+# gestures through slop-git (/opt/slop-git, see 0033-slop-git):
+#
+#   git commit            bare, on a terminal, with something staged
+#                         → slop-git commit (biometric commit message,
+#                           [s]lop-commit / [e]dit / [c]ustom / [a]bort)
+#   git merge <branch>    on a terminal, and only once real git has failed
+#                         with unmerged paths → slop-git merge <branch>
+#                         (LLM mediation, written to <file>.slop_merge)
+#
+# Everything else — any other subcommand, `git commit` with any argument at
+# all (-m, -F, -C, --amend, --fixup, -a, paths, ...: slop-git's commit
+# understands none of them), anything without a terminal (scripts, IDEs,
+# Oh My Zsh's prompt, pip, slop-git's own git calls) — is exec'd straight
+# into /usr/bin/git before any work happens. If slop-git is missing, ollama
+# is down, or no model is pulled, the two gestures above are plain git too.
+#
+# Escape hatches: SLOPPINUX_GIT_PLAIN=1 git ..., or just /usr/bin/git.
+
+REAL_GIT=/usr/bin/git
+
+# Fast path. Keep this first and cheap: it runs for every git invocation on
+# the system, most of them from tooling that must never notice us.
+case "${1:-}" in
+    commit|merge) ;;
+    *) exec "$REAL_GIT" "$@" ;;
+esac
+if [[ -n "${SLOPPINUX_GIT_PLAIN:-}" || ! -t 0 || ! -t 1 ]]; then
+    exec "$REAL_GIT" "$@"
+fi
+
+SLOP_GIT=/usr/local/bin/slop-git
+OLLAMA_URL="http://localhost:11434"
+
+# Point slop-git at the local inference substrate. Its defaults are the
+# Anthropic API in offline mode; Sloppinux wants live, local, and whatever
+# model sloppinux-pick-model (which honours SLOPPINUX_MODEL) would choose.
+# Anything the human already set wins. Returns non-zero if the mediator
+# can't be reached, which callers turn into plain git.
+slop_git_ready() {
+    [[ -x "$SLOP_GIT" ]] || return 1
+    export SLOP_GIT_PROVIDER="${SLOP_GIT_PROVIDER:-ollama}"
+    export SLOP_GIT_LIVE="${SLOP_GIT_LIVE:-1}"
+    if [[ "$SLOP_GIT_PROVIDER" == ollama ]]; then
+        export SLOP_GIT_OLLAMA_URL="${SLOP_GIT_OLLAMA_URL:-$OLLAMA_URL/api/generate}"
+        curl -fsS --max-time 2 -o /dev/null "$OLLAMA_URL/api/tags" 2>/dev/null || return 1
+        if [[ -z "${SLOP_GIT_MODEL:-}" ]]; then
+            SLOP_GIT_MODEL=${SLOPPINUX_MODEL:-$(/usr/local/bin/sloppinux-pick-model 2>/dev/null)}
+            [[ -n "$SLOP_GIT_MODEL" ]] || return 1
+            export SLOP_GIT_MODEL
+        fi
+    fi
+    # slop-git shells out to `git` itself (including `git merge` on our
+    # terminal and `git commit --no-edit`); make sure those land in real git
+    # instead of looping back through this wrapper.
+    export SLOPPINUX_GIT_PLAIN=1
+    return 0
+}
+
+case "$1" in
+    commit)
+        # Bare `git commit` only, and only with something staged — with
+        # nothing staged, git's own "nothing added to commit" + status is
+        # more useful than slop-git's one-liner. Not a repo → rc 128 → git.
+        [[ $# -eq 1 ]] || exec "$REAL_GIT" "$@"
+        "$REAL_GIT" diff --cached --quiet >/dev/null 2>&1
+        [[ $? -eq 1 ]] || exec "$REAL_GIT" "$@"
+        slop_git_ready || exec "$REAL_GIT" "$@"
+        exec "$SLOP_GIT" commit
+        ;;
+    merge)
+        "$REAL_GIT" "$@"
+        rc=$?
+        [[ $rc -ne 0 ]] || exit 0
+        [[ -n "$("$REAL_GIT" diff --name-only --diff-filter=U 2>/dev/null)" ]] || exit "$rc"
+
+        # slop-git merge takes exactly one branch and no options, so find
+        # the single revision argument; octopus merges and --continue stay
+        # with git. Options whose value is a separate word are skipped.
+        shift
+        branches=()
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --) shift; branches+=("$@"); break ;;
+                -m|-F|-s|-X|--message|--file|--strategy|--strategy-option|--into-name|--cleanup) shift ;;
+                -*) ;;
+                *) branches+=("$1") ;;
+            esac
+            shift
+        done
+        [[ ${#branches[@]} -eq 1 ]] || exit "$rc"
+        slop_git_ready || exit "$rc"
+
+        echo "[sloppinux] merge conflict detected, calling a mediator" >&2
+        echo "[sloppinux] (the mediator re-attempts the merge for the record; git objecting to that is part of the process)" >&2
+        exec "$SLOP_GIT" merge "${branches[0]}"
+        ;;
+esac
+exec "$REAL_GIT" "$@"

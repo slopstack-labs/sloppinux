@@ -1,0 +1,46 @@
+#!/bin/bash
+# sloppinux-installer-autostart — live-session-scoped installer ingress gate.
+#
+# Launches Calamares ONLY when the session is running from live media.
+# live-boot mounts the boot medium at /run/live/medium (see
+# /usr/lib/live/boot/0001-init-vars.sh: mountpoint="/run/live/medium"), so
+# that directory existing is our "this is the live ISO" signal. On an
+# installed system it never exists and this script is a silent no-op — the
+# installer has achieved product-market fit exactly once and should not
+# pitch itself again on every login.
+#
+# Calamares has to run as root (it partitions, mounts and unpacks). The live
+# user has passwordless sudo, so we use that; otherwise we fall back to
+# Debian's own wrapper (pkexec + xhost + stale-fstab dance).
+
+[ -d /run/live/medium ] || exit 0
+command -v calamares >/dev/null 2>&1 || exit 0
+# One installer per stakeholder. Double-clicking the launcher is not a
+# horizontal scaling strategy.
+pgrep -x calamares >/dev/null 2>&1 && exit 0
+
+if sudo -n true 2>/dev/null; then
+    # Same trick as Debian's calamares-install-debian: live-build leaves a
+    # stale /etc/fstab behind that confuses Calamares' partitioning.
+    moved_fstab=0
+    if [ -e /etc/fstab ] && sudo -n mv /etc/fstab /etc/fstab.orig.calamares 2>/dev/null; then
+        moved_fstab=1
+    fi
+
+    # Root needs to be allowed onto XWayland in case Qt falls back to xcb.
+    command -v xhost >/dev/null 2>&1 && xhost +si:localuser:root >/dev/null 2>&1
+
+    sudo -n --preserve-env=DISPLAY,XAUTHORITY,WAYLAND_DISPLAY,XDG_RUNTIME_DIR,XDG_SESSION_TYPE,XDG_CURRENT_DESKTOP,LANG,LANGUAGE,LC_ALL \
+        calamares "$@"
+    rc=$?
+
+    command -v xhost >/dev/null 2>&1 && xhost -si:localuser:root >/dev/null 2>&1
+    if [ "$moved_fstab" = 1 ]; then
+        sudo -n mv /etc/fstab.orig.calamares /etc/fstab 2>/dev/null || true
+    fi
+    exit "$rc"
+elif command -v calamares-install-debian >/dev/null 2>&1; then
+    exec calamares-install-debian
+else
+    exec pkexec calamares "$@"
+fi

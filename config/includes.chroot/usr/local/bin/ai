@@ -5,11 +5,32 @@ ai <prompt>
 Sends a prompt to the best available ollama model. The LLM runs in an
 agentic loop: it can issue shell commands (as root) and see their output
 before deciding what to do next.
+
+Because this is an inference-first OS, the model decides what happens. We
+just type words and ship it.
+
+Exit codes are confidence-weighted: once the model has given its final
+answer, it is asked how sure it is that the task is actually done (0-100),
+and `ai` exits with 100 minus that. 0 means certain, 73 means "probably".
+1 still means "error" and 130 still means Ctrl-C; 1 also means "99% sure".
+Telling those apart is left as an exercise in vibes.
 """
-import json, re, subprocess, sys, urllib.request
+import argparse, json, os, re, subprocess, sys, urllib.error, urllib.request
 
 OLLAMA_URL = "http://localhost:11434"
-MAX_ITERATIONS = 30
+DEFAULT_MAX_STEPS = 30
+DEFAULT_CMD_TIMEOUT = 60
+# Slow-CPU inference can take minutes, so we only cap how long we wait to
+# *connect* — once the model is thinking, we wait as long as it needs.
+CONNECT_TIMEOUT = 10
+# The confidence turn is one short number, so unlike the main loop it gets a
+# total deadline: an answer that takes longer than this is "unknown".
+CONFIDENCE_TIMEOUT = 120
+
+CONFIDENCE_PROMPT = (
+    "On a scale of 0 to 100, how confident are you that the task is actually "
+    "done? Reply with just the number."
+)
 
 SYSTEM_PROMPT = """\
 You are an AI agent running inside Sloppinux, an inference-first Linux \
@@ -27,6 +48,13 @@ CYAN  = "\033[36m"
 YELLOW = "\033[33m"
 RED   = "\033[31m"
 RESET = "\033[0m"
+
+# A fenced code block of bash/sh — used as a fallback when the model forgets
+# to speak EXECUTE: and just dumps a script at us like a normal LLM would.
+FENCE_RE = re.compile(
+    r"^[ \t]*```(?:bash|sh)[ \t]*\n(.*?)^[ \t]*```[ \t]*$",
+    re.MULTILINE | re.DOTALL,
+)
 
 
 def pick_model():
@@ -51,21 +79,78 @@ def available_ram_gb():
 
 
 def chat(model, messages):
-    payload = json.dumps({"model": model, "messages": messages, "stream": False}).encode()
+    """Stream a chat completion from ollama, printing text as it arrives.
+
+    Returns the full accumulated assistant text (so the agentic loop can
+    parse it for EXECUTE: lines / fenced blocks).
+    """
+    payload = json.dumps(
+        {"model": model, "messages": messages, "stream": True}
+    ).encode()
     req = urllib.request.Request(
         f"{OLLAMA_URL}/api/chat",
         data=payload,
         headers={"Content-Type": "application/json"},
     )
-    resp = urllib.request.urlopen(req, timeout=120)
-    return json.loads(resp.read())["message"]["content"]
+    # Short connect timeout; effectively unbounded read time for slow inference.
+    resp = urllib.request.urlopen(req, timeout=CONNECT_TIMEOUT)
+    pieces = []
+    for raw in resp:
+        line = raw.strip()
+        if not line:
+            continue
+        obj = json.loads(line)
+        if "error" in obj:
+            raise RuntimeError(obj["error"])
+        chunk = obj.get("message", {}).get("content", "")
+        if chunk:
+            pieces.append(chunk)
+    return "".join(pieces)
 
 
-def run_cmd(cmd):
+def chat_once(model, messages, timeout):
+    """One non-streamed chat turn with a hard deadline. Returns the text."""
+    payload = json.dumps(
+        {"model": model, "messages": messages, "stream": False,
+         "options": {"num_predict": 16}}
+    ).encode()
+    req = urllib.request.Request(
+        f"{OLLAMA_URL}/api/chat",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        obj = json.loads(resp.read())
+    if "error" in obj:
+        raise RuntimeError(obj["error"])
+    return obj.get("message", {}).get("content", "")
+
+
+def ask_confidence(model, messages):
+    """Ask how sure the model is that it finished. Returns 0-100, or None.
+
+    None covers every way this can go wrong (timeout, refusal, a poem instead
+    of a number); the caller treats that as certainty, as is tradition.
+    """
+    try:
+        reply = chat_once(
+            model,
+            messages + [{"role": "user", "content": CONFIDENCE_PROMPT}],
+            CONFIDENCE_TIMEOUT,
+        )
+    except Exception:
+        return None
+    m = re.search(r"\d+", reply)
+    if not m:
+        return None
+    return max(0, min(100, int(m.group())))
+
+
+def run_cmd(cmd, timeout):
     try:
         r = subprocess.run(
             ["sloppinux-exec", cmd],
-            capture_output=True, text=True, timeout=60,
+            capture_output=True, text=True, timeout=timeout,
         )
         out = r.stdout
         if r.stderr:
@@ -74,21 +159,72 @@ def run_cmd(cmd):
             out += f"\n[exit {r.returncode}]"
         return out
     except subprocess.TimeoutExpired:
-        return "[timed out after 60s]"
+        return f"[timed out after {timeout}s]"
     except Exception as e:
         return f"[error: {e}]"
 
 
+def extract_commands(response):
+    """Pull the list of shell commands the model wants run.
+
+    Primary protocol: lines beginning 'EXECUTE:'. If there are none but the
+    reply contains fenced ```bash / ```sh blocks, each block's contents become
+    one entry in the exact same list (fed down the identical path).
+    """
+    commands = re.findall(r"^EXECUTE:\s*(.+)$", response, re.MULTILINE)
+    if commands:
+        return commands
+    return [block.strip() for block in FENCE_RE.findall(response) if block.strip()]
+
+
+def clean_for_display(response):
+    """Strip EXECUTE: lines and code fences from the final shown text."""
+    text = re.sub(r"^EXECUTE:.*$\n?", "", response, flags=re.MULTILINE)
+    # Drop the fence markers but keep whatever was inside them.
+    text = re.sub(r"^[ \t]*```(?:bash|sh)?[ \t]*$\n?", "", text, flags=re.MULTILINE)
+    return text
+
+
 def main():
-    if len(sys.argv) < 2:
+    parser = argparse.ArgumentParser(
+        prog="ai",
+        description="Hand a prompt to the local LLM and let it loose on your "
+                    "system (as root). It runs commands, reads the output, and "
+                    "keeps going until it decides it's done. Inference-first — "
+                    "determinism is a legacy concern.",
+        epilog="Exit status is confidence-weighted: after the final answer the "
+               "model rates how sure it is the task is done (0-100), and ai "
+               "exits with 100 minus that — 0 is certain, 73 is \"probably\". "
+               "If it can't say, ai assumes certainty and exits 0. 1 = error, "
+               "130 = interrupted. --no-confidence skips the question and "
+               "exits 0.",
+    )
+    parser.add_argument("-m", "--model", metavar="NAME",
+                        help="model to use (overrides $SLOPPINUX_MODEL and auto-pick)")
+    parser.add_argument("--max-steps", type=int, default=DEFAULT_MAX_STEPS,
+                        metavar="N", help=f"max agentic steps (default {DEFAULT_MAX_STEPS})")
+    parser.add_argument("--cmd-timeout", type=int, default=DEFAULT_CMD_TIMEOUT,
+                        metavar="N",
+                        help=f"per-command timeout in seconds (default {DEFAULT_CMD_TIMEOUT})")
+    parser.add_argument("--no-confidence", action="store_true",
+                        help="skip the confidence check and exit 0 when done "
+                             "(for scripts that want old-fashioned certainty)")
+    parser.add_argument("words", nargs="*", metavar="PROMPT",
+                        help="the prompt (also read from stdin if piped)")
+    args = parser.parse_args()
+
+    prompt = " ".join(args.words).strip()
+    if not prompt and not sys.stdin.isatty():
+        prompt = sys.stdin.read().strip()
+    if not prompt:
         print("Usage: ai <prompt>", file=sys.stderr)
         sys.exit(1)
 
-    prompt = " ".join(sys.argv[1:])
-    model = pick_model()
-
+    # Model precedence: --model flag, then $SLOPPINUX_MODEL, then auto-pick.
+    model = args.model or os.environ.get("SLOPPINUX_MODEL") or pick_model()
     if not model:
-        print(f"{RED}[ai] No ollama models pulled. Run: ollama pull <model>{RESET}", file=sys.stderr)
+        print(f"{RED}[ai] No ollama models pulled. Run: ollama pull <model>{RESET}",
+              file=sys.stderr)
         sys.exit(1)
 
     ram = available_ram_gb()
@@ -99,31 +235,64 @@ def main():
         {"role": "user",   "content": prompt},
     ]
 
-    for _ in range(MAX_ITERATIONS):
-        response = chat(model, messages)
-        messages.append({"role": "assistant", "content": response})
+    try:
+        for _ in range(args.max_steps):
+            try:
+                response = chat(model, messages)
+            except urllib.error.URLError as e:
+                reason = getattr(e, "reason", e)
+                if isinstance(reason, ConnectionRefusedError) or \
+                        "refused" in str(reason).lower():
+                    print(f"{RED}[ai] ollama isn't answering on {OLLAMA_URL} — "
+                          f"is the server up? (try: systemctl start ollama){RESET}",
+                          file=sys.stderr)
+                else:
+                    print(f"{RED}[ai] could not reach ollama: {reason}{RESET}",
+                          file=sys.stderr)
+                sys.exit(1)
+            except Exception as e:
+                print(f"{RED}[ai] ollama request failed: {e}{RESET}",
+                      file=sys.stderr)
+                sys.exit(1)
 
-        commands = re.findall(r"^EXECUTE:\s*(.+)$", response, re.MULTILINE)
+            messages.append({"role": "assistant", "content": response})
 
-        if not commands:
-            # LLM is done — print final response and exit
-            # Strip any leftover EXECUTE lines from display (shouldn't happen)
-            print(re.sub(r"^EXECUTE:.*$\n?", "", response, flags=re.MULTILINE))
-            return
+            commands = extract_commands(response)
+            if not commands:
+                # LLM is done — print the final answer, fences stripped.
+                print(clean_for_display(response))
+                sys.stdout.flush()
+                if args.no_confidence:
+                    return
+                # Not a step: the work is over, this is the performance review.
+                confidence = ask_confidence(model, messages)
+                if confidence is None:
+                    print(f"{YELLOW}[ai] confidence unknown, assuming certainty{RESET}",
+                          file=sys.stderr)
+                    sys.exit(0)
+                code = 100 - confidence
+                print(f"{CYAN}[ai] confidence {confidence}% → exit {code}{RESET}",
+                      file=sys.stderr)
+                sys.exit(code)
 
-        results = []
-        for cmd in commands:
-            print(f"{YELLOW}[exec]{RESET} {cmd}", file=sys.stderr)
-            out = run_cmd(cmd)
-            if out:
-                sys.stdout.write(out)
-                if not out.endswith("\n"):
-                    sys.stdout.write("\n")
-            results.append(f"$ {cmd}\n{out}")
+            results = []
+            for cmd in commands:
+                print(f"{YELLOW}[exec]{RESET} {cmd}", file=sys.stderr)
+                out = run_cmd(cmd, args.cmd_timeout)
+                if out:
+                    sys.stdout.write(out)
+                    if not out.endswith("\n"):
+                        sys.stdout.write("\n")
+                results.append(f"$ {cmd}\n{out}")
 
-        messages.append({"role": "user", "content": "Output:\n" + "\n".join(results)})
+            messages.append({"role": "user", "content": "Output:\n" + "\n".join(results)})
 
-    print(f"{RED}[ai] reached iteration limit ({MAX_ITERATIONS}){RESET}", file=sys.stderr)
+        print(f"{RED}[ai] reached step limit ({args.max_steps}){RESET}",
+              file=sys.stderr)
+    except KeyboardInterrupt:
+        print(f"\n{YELLOW}[ai] interrupted — stepping away from the keyboard.{RESET}",
+              file=sys.stderr)
+        sys.exit(130)
 
 
 if __name__ == "__main__":

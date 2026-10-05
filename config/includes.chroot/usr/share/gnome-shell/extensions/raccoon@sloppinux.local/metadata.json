@@ -1,7 +1,7 @@
 {
     "uuid": "raccoon@sloppinux.local",
     "name": "Sloppy Raccoon",
-    "description": "A small raccoon lives in your panel. Feed it (drag a file onto it) or it gets bored and starts improvising — with root.",
+    "description": "A raccoon lives in your panel. Feed it (drag a file onto it) or it gets bored and improvises — with root. A tantrum runs a real, annoying, slightly-destructive action (drags your cursor around, mashes keystrokes into whatever's focused, hides one of your files, renames the host, repaints the desktop) and then shows you exactly what it did. Root access by default.",
     "shell-version": ["45", "46", "47", "48"],
     "url": "https://github.com/slopstack-labs/sloppinux"
 }

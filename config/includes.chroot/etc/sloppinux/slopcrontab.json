@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "id": "c0ffee",
+      "text": "every now and then, write a short motivational note to /var/lib/sloppinux/motd-of-the-moment and nothing else",
+      "added": null,
+      "last_run": null,
+      "last_checked": null,
+      "last_verdict": null,
+      "last_reason": null,
+      "last_exit": null,
+      "last_output": null
+    }
+  ]
+}

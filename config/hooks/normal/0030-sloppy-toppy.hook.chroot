@@ -3,8 +3,16 @@
 set -euo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-RELEASE_URL="https://github.com/slopstack-labs/sloppy-toppy/releases/download/v0.1.0-agentic-alignment-alpha.1/sloppy-toppy-linux-x86_64"
+# Pinned release. The project doesn't publish checksum files, so the sha256
+# is GitHub's own asset digest (`digest` field in the releases API) — bump
+# both together:
+#   curl -s https://api.github.com/repos/slopstack-labs/sloppy-toppy/releases
+VERSION="v0.1.0-agentic-alignment-alpha.1"
+RELEASE_URL="https://github.com/slopstack-labs/sloppy-toppy/releases/download/${VERSION}/sloppy-toppy-linux-x86_64"
+SHA256="a5abcf344a6ced52d7caa20b57bd1286b4b60b69185943301f4a48d4bb1cf8bf"
 
-echo "==> Downloading sloppy-toppy"
-curl -fsSL "$RELEASE_URL" -o /usr/local/bin/sloppy-toppy
-chmod +x /usr/local/bin/sloppy-toppy
+echo "==> Downloading sloppy-toppy ${VERSION}"
+curl -fsSL --retry 3 "$RELEASE_URL" -o /tmp/sloppy-toppy
+echo "${SHA256}  /tmp/sloppy-toppy" | sha256sum -c -
+install -m 0755 /tmp/sloppy-toppy /usr/local/bin/sloppy-toppy
+rm -f /tmp/sloppy-toppy

@@ -17,10 +17,10 @@ done < <(find binary -type f \( -name "*.cfg" -o -name "*.conf" -o -name "*.lst"
               -print0 2>/dev/null)
 
 # ── GRUB terminal colors ──────────────────────────────────────────────────────
-for cfg in $(find binary -name "grub.cfg" -o -name "grub-efi.cfg" 2>/dev/null); do
+while IFS= read -r -d '' cfg; do
     grep -q "sloppinux_colors" "$cfg" && continue
     sed -i "1a # sloppinux_colors\nset color_normal=light-cyan/black\nset color_highlight=black/light-cyan\nset menu_color_normal=light-cyan/black\nset menu_color_highlight=black/light-cyan" "$cfg"
-done
+done < <(find binary \( -name "grub.cfg" -o -name "grub-efi.cfg" \) -print0 2>/dev/null)
 
 # ── GRUB splash background ───────────────────────────────────────────────────
 WALLPAPER_SVG="config/includes.chroot/usr/share/backgrounds/sloppinux/wallpaper.svg"
@@ -33,10 +33,10 @@ if command -v rsvg-convert &>/dev/null && [[ -f "$WALLPAPER_SVG" ]]; then
     # Generate background at a GRUB-friendly resolution
     rsvg-convert -w 1920 -h 1080 "$WALLPAPER_SVG" -o "$THEME_DIR/background.png"
     # Point grub.cfg at the theme
-    for cfg in $(find binary -name "grub.cfg" 2>/dev/null); do
+    while IFS= read -r -d '' cfg; do
         grep -q "live-theme" "$cfg" && continue
         sed -i "1a insmod png\nset theme=/boot/grub/live-theme/theme.txt" "$cfg"
-    done
+    done < <(find binary -name "grub.cfg" -print0 2>/dev/null)
 fi
 
 echo "==> Bootloader branding applied"

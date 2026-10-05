@@ -1,0 +1,513 @@
+#!/usr/bin/env python3
+"""
+slopcron — stochastic cron for an inference-first OS.
+
+Classic cron makes you say WHEN ("*/20 * * * *") and WHAT ("find ... -delete").
+slopcron lets you say "every so often, tidy up the downloads folder" and
+defers both questions to the model, at runtime, every time. What "so often"
+means today depends on the clock, the load average, and the weights.
+
+Entries are plain sentences in a JSON file:
+  * system-wide: /etc/sloppinux/slopcrontab.json   (written by root)
+  * per-user:    ~/.config/sloppinux/slopcrontab.json
+
+`slopcron run` (what slopcron.timer fires, roughly every 20-35 minutes) asks
+the model, per entry, "should this run right now?". On YES it hands the
+sentence to `ai --no-confidence`, which runs it as root like everything else
+here. Every decision goes to stdout, which the unit sends to the journal
+under the identifier "slopcron".
+
+The one deterministic rule: an entry never runs twice within MIN_GAP_MINUTES,
+whatever the model says.
+
+SLOPCRON_SYSTEM_FILE overrides the system file path (for testing).
+"""
+import argparse
+import datetime as dt
+import fcntl
+import glob
+import json
+import os
+import pwd
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.request
+import uuid
+
+OLLAMA_URL = "http://localhost:11434"
+SYSTEM_FILE = os.environ.get("SLOPCRON_SYSTEM_FILE",
+                             "/etc/sloppinux/slopcrontab.json")
+USER_FILE_REL = os.path.join(".config", "sloppinux", "slopcrontab.json")
+USER_FILES_GLOB = "/home/*/" + USER_FILE_REL
+
+MIN_GAP_MINUTES = 10          # the only deterministic thing in here
+AI_TIMEOUT = 10 * 60          # one YES gets ten minutes of root
+PING_TIMEOUT = 3
+DECIDE_TIMEOUT = 90           # a YES/NO and one sentence, even on a slow CPU
+OUTPUT_TAIL_CHARS = 600
+
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+VERDICT_RE = re.compile(r"\b(YES|NO)\b", re.IGNORECASE)
+
+EPILOG = f"""\
+examples:
+  slopcron add "every so often, tidy up the downloads folder"
+  slopcron add "now and then, if the disk feels full, find out why"
+  slopcron list
+  slopcron remove 3f9a1c
+  slopcron run              # one evaluation pass, what slopcron.timer does
+
+how it decides:
+  slopcron.timer fires about every 20-35 minutes (randomised on purpose).
+  For each entry the model is shown the sentence, the local time, the
+  minutes since it last ran, and the load average / free disk, and replies
+  YES or NO with a reason. YES runs `ai --no-confidence "<sentence>"` as
+  root, for up to {AI_TIMEOUT // 60} minutes. Anything that isn't clearly YES is NO.
+
+  An entry never runs twice within {MIN_GAP_MINUTES} minutes, whatever the
+  model says. This is the only deterministic thing in here.
+
+files:
+  {SYSTEM_FILE}   (root's entries)
+  ~/{USER_FILE_REL}   (yours)
+  Decisions are logged to the journal: journalctl -t slopcron
+"""
+
+
+# ---------------------------------------------------------------- helpers
+
+def log(msg):
+    print(msg, flush=True)
+
+
+def now():
+    return dt.datetime.now().astimezone()
+
+
+def stamp(t=None):
+    return (t or now()).isoformat(timespec="seconds")
+
+
+def parse_stamp(s):
+    try:
+        return dt.datetime.fromisoformat(s)
+    except (TypeError, ValueError):
+        return None
+
+
+def is_root():
+    return os.geteuid() == 0
+
+
+def own_file():
+    """The file `add`/`remove` write to for whoever is calling."""
+    if is_root():
+        return SYSTEM_FILE
+    return os.path.join(os.path.expanduser("~"), USER_FILE_REL)
+
+
+def owner_of(path):
+    if path == SYSTEM_FILE:
+        return "root"
+    try:
+        return pwd.getpwuid(os.stat(path).st_uid).pw_name
+    except (KeyError, OSError):
+        return os.path.basename(os.path.dirname(os.path.dirname(
+            os.path.dirname(path)))) or "?"
+
+
+def empty_table():
+    return {"version": 1, "entries": []}
+
+
+def load(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return empty_table()
+    except (OSError, ValueError) as e:
+        raise SystemExit(f"slopcron: cannot read {path}: {e}")
+    if not isinstance(data, dict) or not isinstance(data.get("entries"), list):
+        raise SystemExit(f"slopcron: {path} is not a slopcrontab "
+                         "(want {\"entries\": [...]})")
+    return data
+
+
+def save(path, data):
+    """Atomic replace that keeps the original file's owner and mode, so root
+    rewriting a user's table doesn't leave them unable to edit it."""
+    d = os.path.dirname(path)
+    os.makedirs(d, exist_ok=True)
+    try:
+        st = os.stat(path)
+    except FileNotFoundError:
+        st = None
+    fd, tmp = tempfile.mkstemp(prefix=".slopcrontab.", dir=d)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+        if st is not None:
+            os.chmod(tmp, st.st_mode & 0o7777)
+            if is_root():
+                os.chown(tmp, st.st_uid, st.st_gid)
+        else:
+            os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+class Locked:
+    """flock on a sidecar file so `add` during a 10-minute `run` doesn't get
+    eaten. Held only around read-modify-write, never across an ai run."""
+
+    def __init__(self, path):
+        self.lock_path = os.path.join(os.path.dirname(path) or ".",
+                                      ".slopcrontab.lock")
+        self.fd = None
+
+    def __enter__(self):
+        os.makedirs(os.path.dirname(self.lock_path), exist_ok=True)
+        self.fd = os.open(self.lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+        fcntl.flock(self.fd, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *exc):
+        fcntl.flock(self.fd, fcntl.LOCK_UN)
+        os.close(self.fd)
+
+
+def update_entry(path, entry_id, **fields):
+    with Locked(path):
+        data = load(path)
+        for e in data["entries"]:
+            if e.get("id") == entry_id:
+                e.update(fields)
+                save(path, data)
+                return True
+    return False  # removed while we were thinking about it
+
+
+def new_id(taken):
+    while True:
+        i = uuid.uuid4().hex[:6]
+        if i not in taken:
+            return i
+
+
+def all_tables(writable_only=False):
+    """(path, owner) for every table `list`/`run` should look at. A normal
+    user can read the system table but `run` can't record verdicts in it."""
+    tables = [] if writable_only and not is_root() else [(SYSTEM_FILE, "root")]
+    if is_root():
+        for p in sorted(glob.glob(USER_FILES_GLOB)):
+            tables.append((p, owner_of(p)))
+    else:
+        mine = own_file()
+        tables.append((mine, pwd.getpwuid(os.getuid()).pw_name))
+    return tables
+
+
+def short_time(s):
+    t = parse_stamp(s)
+    return t.strftime("%Y-%m-%d %H:%M") if t else "never"
+
+
+# ---------------------------------------------------------------- commands
+
+def cmd_add(args):
+    text = " ".join(args.text).strip()
+    if not text:
+        raise SystemExit("slopcron: say what should happen, e.g. "
+                         "slopcron add \"every so often, tidy up ~/Downloads\"")
+    path = own_file()
+    with Locked(path):
+        data = load(path)
+        eid = new_id({e.get("id") for e in data["entries"]})
+        data["entries"].append({
+            "id": eid,
+            "text": text,
+            "added": stamp(),
+            "last_run": None,
+            "last_checked": None,
+            "last_verdict": None,
+            "last_reason": None,
+            "last_exit": None,
+            "last_output": None,
+        })
+        save(path, data)
+    print(f"added {eid} to {path}")
+    print("the model will decide when. that's the whole feature.")
+    return 0
+
+
+def cmd_list(args):
+    rows = []
+    for path, owner in all_tables():
+        try:
+            data = load(path)
+        except SystemExit as e:
+            print(e, file=sys.stderr)
+            continue
+        for e in data["entries"]:
+            rows.append((owner, e))
+    if not rows:
+        print("no entries. try: slopcron add \"every so often, ...\"")
+        return 0
+    show_owner = len({o for o, _ in rows}) > 1
+    head = f"{'ID':<8}{'OWNER':<10}" if show_owner else f"{'ID':<8}"
+    print(f"{head}{'LAST RUN':<18}{'VERDICT':<9}TEXT")
+    for owner, e in rows:
+        col = f"{e.get('id', '?'):<8}"
+        if show_owner:
+            col += f"{owner:<10}"
+        verdict = e.get("last_verdict") or "-"
+        print(f"{col}{short_time(e.get('last_run')):<18}{verdict:<9}"
+              f"{e.get('text', '')}")
+        if e.get("last_reason"):
+            pad = 8 + (10 if show_owner else 0)
+            print(f"{'':<{pad}}└ {short_time(e.get('last_checked'))}: "
+                  f"{e['last_reason']}")
+    return 0
+
+
+def cmd_remove(args):
+    targets = [own_file()]
+    if is_root():
+        targets += sorted(glob.glob(USER_FILES_GLOB))
+    for path in targets:
+        if not os.path.exists(path):
+            continue
+        with Locked(path):
+            data = load(path)
+            kept = [e for e in data["entries"] if e.get("id") != args.id]
+            if len(kept) != len(data["entries"]):
+                data["entries"] = kept
+                save(path, data)
+                print(f"removed {args.id} from {path}")
+                return 0
+    print(f"slopcron: no entry {args.id!r} you can remove "
+          "(see: slopcron list)", file=sys.stderr)
+    return 1
+
+
+# ---------------------------------------------------------------- run
+
+def ollama_up():
+    try:
+        with urllib.request.urlopen(f"{OLLAMA_URL}/api/tags",
+                                    timeout=PING_TIMEOUT) as r:
+            r.read()
+        return True
+    except (urllib.error.URLError, OSError, ValueError):
+        return False
+
+
+def pick_model():
+    env = os.environ.get("SLOPPINUX_MODEL")
+    if env:
+        return env
+    try:
+        r = subprocess.run(["sloppinux-pick-model"], capture_output=True,
+                           text=True, timeout=10)
+        return r.stdout.strip() or None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def system_context():
+    try:
+        la = " ".join(f"{x:.2f}" for x in os.getloadavg())
+    except OSError:
+        la = "unknown"
+    try:
+        du = shutil.disk_usage("/")
+        disk = f"{du.free * 100 / du.total:.0f}% free"
+    except OSError:
+        disk = "unknown"
+    return f"load average {la}; root filesystem {disk}"
+
+
+def ask(model, entry, since):
+    t = now()
+    prompt = (
+        "You are the scheduler of Sloppinux, an inference-first Linux "
+        "distribution. A recurring task was written in plain language; you "
+        "decide whether it is due.\n\n"
+        f"Task: {entry.get('text', '')}\n"
+        f"Current local time: {t.strftime('%A %Y-%m-%d %H:%M %Z')}\n"
+        f"Minutes since this task last ran: {since}\n"
+        f"System: {system_context()}\n\n"
+        "Should this run right now? Reply with exactly YES or NO and a "
+        "one-sentence reason."
+    )
+    body = json.dumps({
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "stream": False,
+        "options": {"num_predict": 80},
+    }).encode()
+    req = urllib.request.Request(f"{OLLAMA_URL}/api/chat", data=body,
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=DECIDE_TIMEOUT) as r:
+        obj = json.loads(r.read())
+    if "error" in obj:
+        raise RuntimeError(obj["error"])
+    reply = obj.get("message", {}).get("content", "").strip()
+    m = VERDICT_RE.search(reply)
+    verdict = m.group(1).upper() if m else "NO"
+    reason = VERDICT_RE.sub("", reply, count=1) if m else reply
+    reason = " ".join(reason.split()).lstrip(" .,:;-—").strip()
+    if not m:
+        reason = f"(no clear YES, so NO) {reason}".strip()
+    return verdict, reason[:300] or "no reason given"
+
+
+def run_ai(model, text):
+    """ai --no-confidence "<text>" with a hard deadline on the whole process
+    group (ai's own children included). Returns (exit code, output tail)."""
+    cmd = ["ai", "--no-confidence", "-m", model, text]
+    try:
+        p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                             text=True, errors="replace",
+                             start_new_session=True)
+    except OSError as e:
+        return 127, f"could not start ai: {e}"
+    try:
+        out, _ = p.communicate(timeout=AI_TIMEOUT)
+        code = p.returncode
+    except subprocess.TimeoutExpired:
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.killpg(p.pid, sig)
+            except OSError:  # gone already, or a setuid child we can't touch
+                pass
+            time.sleep(5)
+        try:
+            out, _ = p.communicate(timeout=30)
+        except subprocess.TimeoutExpired:  # something escaped with our pipe
+            p.kill()
+            out = ""
+        out = (out or "") + f"\n[slopcron: stopped after {AI_TIMEOUT // 60} minutes]"
+        code = 124
+    out = ANSI_RE.sub("", out or "").strip()
+    return code, out[-OUTPUT_TAIL_CHARS:]
+
+
+def cmd_run(args):
+    if not ollama_up():
+        log(f"ollama not reachable at {OLLAMA_URL}, skipping this pass "
+            "(the timer will try again)")
+        return 0
+    model = pick_model()
+    if not model:
+        log("no ollama model available, skipping this pass")
+        return 0
+
+    decided = ran = 0
+    for path, owner in all_tables(writable_only=True):
+        if not os.path.exists(path):
+            continue
+        try:
+            entries = load(path)["entries"]
+        except SystemExit as e:
+            log(str(e))
+            continue
+        for e in entries:
+            eid = e.get("id", "?")
+            text = e.get("text", "")
+            if not eid or not text:
+                continue
+            tag = f"[{owner}] {eid} \"{text}\""
+            last = parse_stamp(e.get("last_run"))
+            if last is not None:
+                mins = (now() - last).total_seconds() / 60
+                if mins < MIN_GAP_MINUTES:
+                    log(f"{tag}: ran {mins:.0f} min ago, under the "
+                        f"{MIN_GAP_MINUTES}-minute floor, not asking")
+                    continue
+                since = f"{mins:.0f}"
+            else:
+                since = "never"
+
+            try:
+                verdict, reason = ask(model, e, since)
+            except Exception as ex:  # ollama went away mid-pass
+                log(f"{tag}: could not ask {model} ({ex}), ending this pass")
+                return 0
+            decided += 1
+            checked = stamp()
+            log(f"{tag}: {verdict} — {reason}")
+
+            if verdict != "YES":
+                update_entry(path, eid, last_checked=checked,
+                             last_verdict="NO", last_reason=reason)
+                continue
+
+            # Record the run before it starts, so the floor holds even if
+            # this pass dies halfway through a ten-minute ai session.
+            update_entry(path, eid, last_checked=checked, last_run=checked,
+                         last_verdict="YES", last_reason=reason)
+            code, tail = run_ai(model, text)
+            ran += 1
+            last_line = tail.splitlines()[-1] if tail else ""
+            log(f"{tag}: ai exited {code}" + (f": {last_line}" if last_line else ""))
+            update_entry(path, eid, last_exit=code, last_output=tail)
+
+    log(f"pass done with {model}: {decided} asked, {ran} ran")
+    return 0
+
+
+# ---------------------------------------------------------------- main
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="slopcron",
+        description="Stochastic cron. Crontab entries in natural language; the\n"
+                    "model decides when 'so often' is, and what 'tidy' means, at\n"
+                    "runtime. Everything runs through ai, as root.",
+        epilog=EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sub = parser.add_subparsers(dest="command", metavar="COMMAND")
+
+    p = sub.add_parser("add", help="add an entry, in words")
+    p.add_argument("text", nargs="+", metavar="SENTENCE",
+                   help='e.g. "every so often, tidy up the downloads folder"')
+    p.set_defaults(func=cmd_add)
+
+    p = sub.add_parser("list", help="show entries, last run, last verdict")
+    p.set_defaults(func=cmd_list)
+
+    p = sub.add_parser("remove", help="remove an entry by id")
+    p.add_argument("id", help="the id shown by slopcron list")
+    p.set_defaults(func=cmd_remove)
+
+    p = sub.add_parser("run", help="one evaluation pass (what the timer calls)")
+    p.set_defaults(func=cmd_run)
+
+    args = parser.parse_args()
+    if not getattr(args, "func", None):
+        parser.print_help()
+        return 2
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(130)

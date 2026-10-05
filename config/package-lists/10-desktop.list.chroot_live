@@ -24,6 +24,10 @@ pulseaudio-utils
 calamares
 calamares-settings-debian
 grub-efi-amd64
+# BIOS GRUB modules so the installer's bootloader step works on legacy
+# machines without a network. grub-pc-bin coexists with grub-efi-amd64;
+# only the grub-pc meta-package conflicts (the target fixup swaps that).
+grub-pc-bin
 grub-efi-amd64-signed
 grub-common
 shim-signed

@@ -1,0 +1,16 @@
+#!/bin/bash
+# Seats the raccoon as the system's userspace OOM judge: enables
+# sloppinux-raccoon-oomd.service (shipped via includes.chroot) in both the
+# live session and installed systems. Kept out of 0016 so each unit's
+# enablement has a single owner.
+set -euo pipefail
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# live-build does not reliably preserve the execute bit from includes.chroot,
+# and a non-executable ExecStart fails with 203/EXEC on every boot.
+chmod 0755 /usr/local/bin/sloppinux-raccoon-oomd
+chmod 0644 /etc/systemd/system/sloppinux-raccoon-oomd.service
+
+# Offline enable (no systemd running in the chroot) just creates the
+# multi-user.target.wants symlink, which Calamares copies to the target.
+systemctl enable sloppinux-raccoon-oomd.service

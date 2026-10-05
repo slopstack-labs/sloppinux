@@ -13,7 +13,9 @@ color-scheme='prefer-dark'
 gtk-theme='Adwaita-dark'
 
 [org/gnome/shell]
-enabled-extensions=['dash-to-dock@micxgx.gmail.com', 'system-monitor@paradoxxx.zero.gmail.com', 'raccoon@sloppinux.local']
+# Skip GNOME's own first-login tour; sloppinux-welcome covers it.
+welcome-dialog-last-shown-version='4294967295'
+enabled-extensions=['dash-to-dock@micxgx.gmail.com', 'system-monitor@gnome-shell-extensions.gcampax.github.com', 'raccoon@sloppinux.local']
 
 [org/gnome/desktop/sound]
 theme-name='sloppinux'

@@ -1,0 +1,31 @@
+# First-boot inference capacity right-sizing for installed Sloppinux systems.
+# Pulls one larger ollama model tiered by total RAM; see
+# /usr/local/bin/sloppinux-model-autopull for the tiers and retry rules.
+[Unit]
+Description=Sloppinux first-boot model autopull (RAM-tiered ollama model)
+Documentation=file:/usr/local/bin/sloppinux-model-autopull
+Wants=network-online.target ollama.service
+After=network-online.target ollama.service
+# Never in the live session: its writable overlay is RAM-backed, and a
+# multi-GB download there competes with the model for the same memory.
+ConditionPathExists=!/run/live/medium
+# Run-once marker; the script writes it on success or permanent give-up and
+# leaves it absent on no-network so the next boot retries.
+ConditionPathExists=!/var/lib/sloppinux/model-autopull.done
+
+[Service]
+# Type=exec, not oneshot: a oneshot stays "activating" until it exits, and
+# multi-user.target is implicitly ordered after everything it wants, so a
+# 20 GB download would hold boot "unfinished" for hours. With exec, the unit
+# counts as started once the script is running and the download happens in
+# the background like the polite inference daemon it is.
+Type=exec
+ExecStart=/usr/local/bin/sloppinux-model-autopull
+StateDirectory=sloppinux
+Restart=no
+SyslogIdentifier=sloppinux-model-autopull
+Nice=19
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=multi-user.target

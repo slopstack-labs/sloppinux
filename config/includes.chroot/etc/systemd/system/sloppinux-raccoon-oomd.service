@@ -1,0 +1,30 @@
+# Userspace OOM killer with taste: when memory runs low, the raccoon kills
+# the process it finds least interesting and announces the verdict (desktop
+# notification, wall, journal, /run/sloppinux-raccoon-oomd/last-verdict.json).
+# Thresholds and the dry-run switch: see /usr/local/bin/sloppinux-raccoon-oomd;
+# override them in /etc/default/sloppinux-raccoon-oomd.
+[Unit]
+Description=Sloppinux raccoon OOM court (kills the least interesting process)
+Documentation=file:/usr/local/bin/sloppinux-raccoon-oomd
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/sloppinux-raccoon-oomd
+EnvironmentFile=-/etc/default/sloppinux-raccoon-oomd
+Restart=on-failure
+RestartSec=2
+SyslogIdentifier=sloppinux-raccoon-oomd
+# The judge must outlive the accused: never let the kernel OOM killer pick
+# the raccoon, and keep it scheduled while everything else is thrashing.
+OOMScoreAdjust=-1000
+Nice=-10
+LimitMEMLOCK=infinity
+RuntimeDirectory=sloppinux-raccoon-oomd
+RuntimeDirectoryMode=0755
+# It needs root to read every process, kill any of them, notify other
+# users' sessions and wall their terminals, but it never writes to disk.
+ProtectSystem=strict
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,163 @@
+#!/usr/bin/env python3
+"""
+sloppinux-install-survey — first-boot post-install partitioning review.
+
+The Calamares target fixup (0040-calamares) leaves the installed system's
+fstab, `df -h /` and /proc/partitions in /var/lib/sloppinux/install-survey.txt.
+On first boot sloppinux-install-survey.service runs this: it waits for
+ollama, has the resident model review the layout as a snobbish senior
+sysadmin, and writes
+
+    score: N/10
+    <verdict, two sentences at most>
+
+to /var/lib/sloppinux/install-score.txt, which sloppinux-welcome appends to
+the first-login notification. Exiting without a score file (ollama never
+came up, no model pulled) is fine: the unit's ConditionPathExists re-arms
+it for the next boot.
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+import urllib.request
+
+OLLAMA_URL = "http://localhost:11434"
+STATE_DIR = "/var/lib/sloppinux"
+SURVEY = os.path.join(STATE_DIR, "install-survey.txt")
+SCORE = os.path.join(STATE_DIR, "install-score.txt")
+OLLAMA_WAIT_S = 120
+GENERATE_TIMEOUT_S = 900  # CPU inference on a fresh install is not fast
+
+SYSTEM = (
+    "You are a snobbish senior Linux sysadmin with thirty years of opinions "
+    "about disk layouts. You are reviewing how a junior partitioned a fresh "
+    "install. Be condescending, specific to what you see, and brief."
+)
+PROMPT = """Here is the partitioning of a freshly installed machine:
+
+{survey}
+
+Rate this partitioning from 0 to 10. Reply in exactly this format and nothing else:
+SCORE: <integer 0-10>
+<your verdict, two sentences at most>"""
+
+
+def log(msg):
+    print(f"[sloppinux-install-survey] {msg}", flush=True)
+
+
+def ollama_up():
+    try:
+        with urllib.request.urlopen(f"{OLLAMA_URL}/api/tags", timeout=3) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+
+def wait_for_ollama():
+    deadline = time.monotonic() + OLLAMA_WAIT_S
+    while time.monotonic() < deadline:
+        if ollama_up():
+            return True
+        time.sleep(3)
+    return ollama_up()
+
+
+def pick_model():
+    override = os.environ.get("SLOPPINUX_MODEL")
+    if override:
+        return override
+    try:
+        out = subprocess.run(
+            ["/usr/local/bin/sloppinux-pick-model"],
+            capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    return out.stdout.strip() or None
+
+
+def generate(model, prompt):
+    body = json.dumps({
+        "model": model,
+        "system": SYSTEM,
+        "prompt": prompt,
+        "stream": False,
+        "options": {"temperature": 0.8, "num_predict": 160},
+    }).encode()
+    req = urllib.request.Request(
+        f"{OLLAMA_URL}/api/generate", data=body,
+        headers={"Content-Type": "application/json"}, method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=GENERATE_TIMEOUT_S) as r:
+        return json.loads(r.read()).get("response", "")
+
+
+def parse(text):
+    """Return (score 0-10, verdict). Small models freelance on format, so
+    take the first plausible number and the first two sentences of prose."""
+    text = text.replace("**", "").strip()
+    m = (re.search(r"score\s*[:=]?\s*(\d{1,2})", text, re.I)
+         or re.search(r"\b(\d{1,2})\s*/\s*10\b", text)
+         or re.search(r"\b(\d{1,2})\b", text))
+    # No number at all is a refusal to commit, which a senior admin scores 4.
+    score = max(0, min(10, int(m.group(1)))) if m else 4
+
+    prose = re.sub(r"(?i)\bscore\s*[:=]?\s*\d{1,2}\s*(/\s*10)?\s*[.:,;-]?", "", text, count=1)
+    prose = " ".join(prose.split())
+    sentences = re.split(r"(?<=[.!?])\s+", prose)
+    verdict = " ".join(s for s in sentences[:2] if s).strip()
+    if len(verdict) > 300:
+        verdict = verdict[:297].rstrip() + "..."
+    return score, verdict or "I have no words, and I always have words."
+
+
+def write_score(score, verdict):
+    tmp = SCORE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(f"score: {score}/10\n{verdict}\n")
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, SCORE)
+
+
+def main():
+    if os.path.exists(SCORE):
+        log("already scored; the verdict stands")
+        return 0
+    try:
+        with open(SURVEY, encoding="utf-8", errors="replace") as f:
+            survey = f.read().strip()
+    except OSError:
+        log(f"no {SURVEY}; nothing to judge")
+        return 0
+    if not survey:
+        log("survey is empty; nothing to judge")
+        return 0
+
+    if not wait_for_ollama():
+        log(f"ollama not up after {OLLAMA_WAIT_S}s; will try again next boot")
+        return 0
+    model = pick_model()
+    if not model:
+        log("no model available; will try again next boot")
+        return 0
+
+    log(f"asking {model} for a professional opinion")
+    try:
+        raw = generate(model, PROMPT.format(survey=survey[:4000]))
+    except Exception as exc:  # noqa: BLE001 — a failed review is not a failed boot
+        log(f"review failed ({exc}); will try again next boot")
+        return 0
+    score, verdict = parse(raw)
+    write_score(score, verdict)
+    log(f"score: {score}/10 — {verdict}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

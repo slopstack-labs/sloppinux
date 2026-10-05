@@ -1,0 +1,18 @@
+# When does slopcron think about running things? Roughly every 20-35 minutes,
+# never the same twice. Randomness is the feature. OnBootSec keeps it quiet
+# until well after the first-login welcome, including in the live session,
+# which is where the demo happens.
+[Unit]
+Description=Sloppinux stochastic cron (roughly every so often)
+Documentation=file:/usr/local/bin/slopcron
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=20min
+RandomizedDelaySec=15min
+AccuracySec=1min
+# A missed "every so often" is not owed to anyone.
+Persistent=false
+
+[Install]
+WantedBy=timers.target

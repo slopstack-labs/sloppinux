@@ -1,0 +1,792 @@
+#!/usr/bin/env python3
+"""
+sloppinux-raccoon-oomd
+
+Userspace OOM killer with taste. When memory runs low, the raccoon walks
+through everything that is holding a meaningful amount of RAM, decides
+which process it finds LEAST INTERESTING, kills that one, and announces the
+verdict: a desktop notification to every logged-in graphical user, a wall
+message to every terminal, the journal, and a verdict file in /run.
+
+Deterministic operating systems pick the process with the highest
+oom_score. Sloppinux picks the most boring one. Memory hoarding is boring,
+so a big process is still the likeliest victim, but shiny things, kin, and
+anything a human is visibly typing into get a stay of execution.
+
+The raccoon deliberately does NOT ask the LLM. Under memory pressure the
+LLM is usually the problem, and loading a model to decide which process to
+kill is the single funniest way to die.
+
+Runs as root from sloppinux-raccoon-oomd.service. Knobs (environment, or
+/etc/default/sloppinux-raccoon-oomd):
+
+  SLOPPINUX_OOMD_MEM_PCT    act when MemAvailable drops below this % (5)
+  SLOPPINUX_OOMD_SWAP_PCT   ...and free swap is below this % (10); a machine
+                            without swap counts as 0 % free
+  SLOPPINUX_OOMD_PSI_FULL   also act when PSI memory "full avg10" is at least
+                            this while MemAvailable < 3x the threshold (60)
+  SLOPPINUX_OOMD_NOTIFY     1 = desktop notification per graphical user (1)
+  SLOPPINUX_OOMD_WALL       1 = wall(1) the verdict to every terminal (1)
+  SLOPPINUX_OOMD_DRY_RUN    1 = announce, but don't actually kill (0)
+
+Kernel OOM remains the backstop: the default threshold is well above the
+point where the kernel would step in, so the raccoon gets the first bite.
+
+  sloppinux-raccoon-oomd             run the daemon
+  sloppinux-raccoon-oomd --judge     rank who would die right now, kill nothing
+  sloppinux-raccoon-oomd --judge --announce
+                                     ...and send the (fake) verdict out (root)
+"""
+import argparse
+import ctypes
+import html
+import json
+import os
+import pwd
+import random
+import select
+import signal
+import subprocess
+import sys
+import time
+
+RUN_DIR = "/run/sloppinux-raccoon-oomd"
+LAST_VERDICT = os.path.join(RUN_DIR, "last-verdict.json")
+VERDICT_LOG = os.path.join(RUN_DIR, "verdicts.jsonl")
+VERDICT_LOG_MAX_BYTES = 256 * 1024
+SOUND_FILE = "/usr/share/sounds/sloppinux/stereo/pipe.oga"
+
+CLK_TCK = os.sysconf("SC_CLK_TCK")
+PAGE_SIZE = os.sysconf("SC_PAGE_SIZE")
+PF_KTHREAD = 0x00200000
+MIB = 1024 * 1024
+GIB = 1024 * MIB
+
+# Only processes in the top N by RSS (and above a floor) are considered:
+# killing an uninteresting 4 MB daemon would be a fine verdict and a useless
+# one, because it frees nothing.
+CANDIDATE_POOL = 25
+MIN_CANDIDATE_RSS = 32 * MIB
+# ...and of those, only ones holding at least 1/N of the biggest one's anon.
+WORTH_IT_FRACTION = 4
+
+POLL_IDLE_SECS = 1.0
+POLL_TENSE_SECS = 0.1
+DEATH_WAIT_SECS = 5.0
+COOLDOWN_SECS = 1.0
+# A process that was sentenced but hasn't died (stuck in D state) isn't
+# picked again for this long; the raccoon moves on to the next most boring.
+RESENTENCE_SECS = 15.0
+
+# The raccoon is feral, not stupid. These are load-bearing: killing them
+# ends the session (or the boot, or the install) rather than freeing memory.
+PROTECTED_EXACT = {
+    "systemd", "(sd-pam)", "init", "dbus-daemon", "dbus-broker",
+    "dbus-broker-lau", "gnome-shell", "gnome-session-b", "gnome-session-c",
+    "gnome-session-i", "Xwayland", "Xorg", "gdm", "gdm-session-wor",
+    "gdm-wayland-ses", "gdm-x-session", "agetty", "login", "sshd", "polkitd",
+    "NetworkManager", "wpa_supplicant", "dpkg", "apt", "apt-get",
+    "unattended-upgr", "calamares", "live-config", "plymouthd", "cryptsetup",
+    "sloppinux-racco",  # comm is truncated to 15 chars; that's us
+}
+PROTECTED_PREFIX = ("systemd-",)
+
+# (kind, needle, interest delta, reason). Matched against the lowercased
+# comm and argv[0] basename. kind: "exact", "prefix", "sub" (substring).
+# Positive = interesting = spared. Every reason ends up in a verdict, so
+# write them for the stakeholder reading the notification.
+TASTE = [
+    ("sub", "raccoon", +80, "it is about raccoons"),
+    ("sub", "trash", +60, "it smells like trash, in a good way"),
+    ("sub", "panda", +40, "possible relative"),
+    ("sub", "ollama", +35, "it talks to the oracle, and the raccoon respects the oracle"),
+    ("exact", "ai", +35, "it is the raccoon's own hands"),
+    ("sub", "sloppiler", +30, "Slopstack kin"),
+    ("sub", "sloppy-toppy", +30, "Slopstack kin"),
+    ("exact", "mpv", +25, "shiny moving pictures"),
+    ("exact", "vlc", +25, "shiny moving pictures"),
+    ("exact", "totem", +25, "shiny moving pictures"),
+    ("exact", "showtime", +25, "shiny moving pictures"),
+    ("exact", "celluloid", +25, "shiny moving pictures"),
+    ("exact", "ffplay", +25, "shiny moving pictures"),
+    ("exact", "ffmpeg", +15, "it is making shiny moving pictures"),
+    ("sub", "steam", +20, "it might be a game"),
+    ("sub", "minetest", +20, "it is a game about digging"),
+    ("sub", "luanti", +20, "it is a game about digging"),
+    ("sub", "supertux", +20, "it is a game"),
+    ("prefix", "gnome-mines", +20, "it is a game"),
+    ("sub", "aisleriot", +20, "it is a game"),
+    ("exact", "nautilus", +15, "a box full of files to rummage through"),
+    ("sub", "firefox", +10, "it might be showing raccoon videos"),
+    ("exact", "isolated web co", +5, "a browser tab, which might contain a raccoon"),
+    ("exact", "web content", +5, "a browser tab, which might contain a raccoon"),
+    ("exact", "gnome-terminal-", +10, "a human talks to the computer through it"),
+    ("exact", "kgx", +10, "a human talks to the computer through it"),
+    ("exact", "ptyxis", +10, "a human talks to the computer through it"),
+    ("exact", "gimp", +15, "it makes pictures"),
+    ("exact", "inkscape", +15, "it makes pictures"),
+    # The boring end of the bin.
+    ("exact", "cc1", -20, "it is compiling, the least interesting thing a computer can do"),
+    ("exact", "cc1plus", -20, "it is compiling C++, which takes forever and has no plot"),
+    ("exact", "rustc", -20, "it is compiling Rust, which takes forever and has no plot"),
+    ("exact", "ld", -15, "a linker. Nobody has ever been excited about a linker"),
+    ("exact", "make", -10, "it makes things, slowly, out of other things"),
+    ("exact", "ninja", -10, "a build tool named after something cooler than itself"),
+    ("exact", "cargo", -10, "it is compiling Rust, which takes forever and has no plot"),
+    ("sub", "tracker-miner", -25, "it indexes files for a search nobody runs"),
+    ("sub", "localsearch", -25, "it indexes files for a search nobody runs"),
+    ("prefix", "evolution", -25, "it syncs a calendar nobody opened"),
+    ("sub", "packagekit", -20, "background paperwork"),
+    ("sub", "fwupd", -20, "it checks for firmware updates, quietly, forever"),
+    ("prefix", "gsd-", -15, "a settings daemon. It settles things. Nothing else"),
+    ("prefix", "goa-", -15, "online accounts plumbing"),
+    ("prefix", "gvfs", -15, "virtual filesystem plumbing"),
+    ("prefix", "ibus", -10, "input method plumbing"),
+    ("prefix", "at-spi", -10, "accessibility bus plumbing"),
+    ("prefix", "xdg-", -10, "portal plumbing"),
+    ("sub", "update", -15, "it is updating something"),
+    ("exact", "gnome-software", -20, "it is thinking about updates"),
+    ("exact", "geoclue", -10, "it wants to know where you are, which is boring"),
+    ("exact", "colord", -10, "it manages colour profiles. No actual colours involved"),
+    ("exact", "cupsd", -15, "a print server. Nobody prints"),
+    ("prefix", "cups", -15, "printer plumbing. Nobody prints"),
+    ("exact", "modemmanager", -15, "it manages modems. It is not 1998"),
+    ("exact", "avahi-daemon", -10, "it shouts its hostname into the LAN"),
+    ("exact", "snapd", -20, "it is snapd"),
+    ("prefix", "electron", -10, "a web page cosplaying as an app"),
+    ("exact", "slack", -15, "corporate chat"),
+    ("exact", "teams", -20, "corporate chat"),
+]
+
+CATCHPHRASES = [
+    "Nothing personal. It just wasn't shiny.",
+    "The raccoon has spoken. The raccoon would like a snack now.",
+    "Sentenced by a jury of one trash panda.",
+    "It was sniffed, found wanting, and knocked off the counter.",
+    "Feed the raccoon and it might be more lenient next time.",
+    "This verdict is final and was reached without any determinism.",
+    "Memory has been liberated. Interestingness has been preserved.",
+]
+
+
+def log(msg):
+    print(msg, flush=True)
+
+
+def env_num(name, default):
+    try:
+        return float(os.environ.get(name, default))
+    except ValueError:
+        log(f"ignoring non-numeric {name}={os.environ[name]!r}, using {default}")
+        return float(default)
+
+
+def env_flag(name, default):
+    return os.environ.get(name, default).strip().lower() in ("1", "yes", "true", "on")
+
+
+# ── Memory pressure ───────────────────────────────────────────────────────
+
+def read_meminfo():
+    info = {}
+    with open("/proc/meminfo") as f:
+        for line in f:
+            key, _, rest = line.partition(":")
+            if key in ("MemTotal", "MemAvailable", "SwapTotal", "SwapFree"):
+                info[key] = int(rest.split()[0]) * 1024
+    return info
+
+
+def read_psi_full_avg10():
+    """PSI 'full avg10' for memory, or None if the kernel doesn't expose it."""
+    try:
+        with open("/proc/pressure/memory") as f:
+            for line in f:
+                if line.startswith("full "):
+                    for field in line.split()[1:]:
+                        k, _, v = field.partition("=")
+                        if k == "avg10":
+                            return float(v)
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+class Pressure:
+    def __init__(self, mem_pct, swap_pct, psi_full):
+        self.mem_pct = mem_pct
+        self.swap_pct = swap_pct
+        self.psi_full = psi_full
+
+    def sample(self):
+        """Return (is_low, is_tense, description)."""
+        m = read_meminfo()
+        total = m.get("MemTotal", 1)
+        avail_pct = 100.0 * m.get("MemAvailable", total) / total
+        swap_total = m.get("SwapTotal", 0)
+        swap_pct = 100.0 * m.get("SwapFree", 0) / swap_total if swap_total else 0.0
+        psi = read_psi_full_avg10()
+
+        mem_low = avail_pct < self.mem_pct and swap_pct < self.swap_pct
+        thrashing = (psi is not None and psi >= self.psi_full
+                     and avail_pct < 3 * self.mem_pct)
+        tense = avail_pct < 2 * self.mem_pct or (psi is not None and psi >= self.psi_full / 2)
+        desc = (f"MemAvailable {avail_pct:.1f}% of {total / GIB:.1f} GiB, "
+                f"swap free {swap_pct:.0f}%"
+                + (f", PSI full avg10 {psi:.1f}" if psi is not None else ""))
+        return mem_low or thrashing, tense, desc
+
+
+# ── Process inspection ────────────────────────────────────────────────────
+
+class Proc:
+    __slots__ = ("pid", "comm", "state", "tty", "flags", "cpu_ticks",
+                 "starttime", "rss", "uid", "adj", "argv0", "cmdline",
+                 "anon", "interest", "reasons")
+
+
+def read_stat(pid):
+    with open(f"/proc/{pid}/stat", "rb") as f:
+        data = f.read().decode("utf-8", "replace")
+    # comm may contain spaces and ')' — split on the LAST ')'.
+    lpar = data.index("(")
+    rpar = data.rindex(")")
+    comm = data[lpar + 1:rpar]
+    rest = data[rpar + 2:].split()
+    # rest[0] is field 3 (state); field n is rest[n - 3].
+    return {
+        "comm": comm,
+        "state": rest[0],
+        "tty": int(rest[4]),
+        "flags": int(rest[6]),
+        "cpu_ticks": int(rest[11]) + int(rest[12]),
+        "starttime": int(rest[19]),
+        "rss": int(rest[21]) * PAGE_SIZE,
+    }
+
+
+def scan():
+    """Every killable-in-principle userspace process, cheaply (stat only)."""
+    me = os.getpid()
+    procs = []
+    for name in os.listdir("/proc"):
+        if not name.isdigit():
+            continue
+        pid = int(name)
+        if pid in (1, me):
+            continue
+        try:
+            st = read_stat(pid)
+            uid = os.stat(f"/proc/{pid}").st_uid
+        except (OSError, ValueError, IndexError):
+            continue  # raced with exit, or unreadable
+        if st["flags"] & PF_KTHREAD or st["state"] in ("Z", "X") or st["rss"] == 0:
+            continue
+        p = Proc()
+        p.pid = pid
+        p.uid = uid
+        for k, v in st.items():
+            setattr(p, k, v)
+        procs.append(p)
+    return procs
+
+
+def enrich(p):
+    """Read the more expensive bits, only for the candidate pool."""
+    try:
+        with open(f"/proc/{p.pid}/oom_score_adj") as f:
+            p.adj = int(f.read().strip() or 0)
+    except (OSError, ValueError):
+        p.adj = 0
+    try:
+        with open(f"/proc/{p.pid}/cmdline", "rb") as f:
+            argv = [a.decode("utf-8", "replace") for a in f.read().split(b"\0") if a]
+    except OSError:
+        argv = []
+    # Chromium-family apps rewrite their cmdline into ONE space-joined
+    # argument, so argv[0] would otherwise drag every renderer flag into
+    # the verdict. First token only, and short enough for a notification.
+    p.argv0 = (os.path.basename(argv[0]).split()[0] if argv and argv[0].strip() else p.comm)[:40]
+    p.cmdline = " ".join(argv) if argv else f"[{p.comm}]"
+    p.anon = p.rss
+    try:
+        with open(f"/proc/{p.pid}/status") as f:
+            for line in f:
+                if line.startswith("RssAnon:"):
+                    p.anon = int(line.split()[1]) * 1024
+                    break
+    except (OSError, ValueError):
+        pass
+    return p
+
+
+def is_protected(p):
+    if p.adj <= -1000:
+        return True
+    if p.comm in PROTECTED_EXACT:
+        return True
+    return p.comm.startswith(PROTECTED_PREFIX)
+
+
+def uptime_secs():
+    with open("/proc/uptime") as f:
+        return float(f.read().split()[0])
+
+
+def judge(p, mem_total, now_uptime):
+    """Interest score: higher is more interesting, lowest dies."""
+    reasons = []  # (delta, text)
+    names = {p.comm.lower(), p.argv0.lower()}
+    seen = set()
+    for kind, needle, delta, why in TASTE:
+        if why in seen:
+            continue
+        for n in names:
+            if ((kind == "exact" and n == needle)
+                    or (kind == "prefix" and n.startswith(needle))
+                    or (kind == "sub" and needle in n)):
+                reasons.append((delta, why))
+                seen.add(why)
+                break
+
+    if p.tty != 0:
+        reasons.append((+15, "a human is typing at it"))
+
+    age = max(0.0, now_uptime - p.starttime / CLK_TCK)
+    if age < 60:
+        reasons.append((+20, "brand new, still smells like the factory"))
+    elif age > 6 * 3600:
+        reasons.append((-10, "it has been here for hours; the raccoon already sniffed it"))
+
+    busy = (p.cpu_ticks / CLK_TCK) / age if age > 1 else 0.0
+    if busy > 0.25:
+        reasons.append((+15, "it is busy rustling around"))
+    elif busy < 0.001 and age > 300:
+        reasons.append((-15, "it hasn't moved in ages"))
+
+    if p.uid < 1000 and p.tty == 0 and len(p.comm) > 3 and p.comm.endswith("d"):
+        reasons.append((-5, "its name ends in 'd'; daemons are boring"))
+
+    if p.adj:
+        reasons.append((-p.adj / 50.0,
+                        "its oom_score_adj says even its owner finds it boring" if p.adj > 0
+                        else "its owner vouched for it"))
+
+    share = 100.0 * p.anon / mem_total if mem_total else 0.0
+    if share >= 1:
+        reasons.append((-1.5 * share,
+                        f"it is sitting on {fmt_bytes(p.anon)} and nothing about that is shiny"))
+
+    p.interest = 50.0 + sum(d for d, _ in reasons)
+    p.reasons = reasons
+    return p
+
+
+def rank(procs, mem_total, exclude=()):
+    """Candidates sorted least interesting first, plus how many were spared
+    for being load-bearing."""
+    pool = sorted(procs, key=lambda p: p.rss, reverse=True)
+    big = [p for p in pool if p.rss >= MIN_CANDIDATE_RSS][:CANDIDATE_POOL]
+    pool = big or pool[:CANDIDATE_POOL]
+    now = uptime_secs()
+    eligible, protected = [], 0
+    for p in pool:
+        if p.pid in exclude:
+            continue
+        enrich(p)
+        if is_protected(p):
+            protected += 1
+            continue
+        eligible.append(p)
+    # Worth-the-effort rule: only things at least a quarter the size of the
+    # biggest snack are on the menu. Taste decides among those, so one bite
+    # actually relieves the pressure instead of nibbling 300 MB indexers
+    # while the kernel OOM killer sharpens its knife.
+    floor = max((p.anon for p in eligible), default=0) / WORTH_IT_FRACTION
+    ranked = [judge(p, mem_total, now) for p in eligible if p.anon >= floor]
+    # Lowest interest first; on a tie, the bigger one frees more.
+    ranked.sort(key=lambda p: (p.interest, -p.anon))
+    return ranked, protected
+
+
+def fmt_bytes(n):
+    return f"{n / GIB:.1f} GiB" if n >= GIB else f"{n / MIB:.0f} MiB"
+
+
+def display_name(p):
+    """comm is truncated to 15 chars and argv[0] can be an interpreter, so
+    use whichever says more: 'Isolated Web Co (firefox-esr)', not 'python3'."""
+    if not p.argv0 or p.argv0 == p.comm:
+        return p.comm
+    if p.argv0.startswith(p.comm):
+        return p.argv0  # comm was just the truncated argv[0]
+    return f"{p.comm} ({p.argv0})"
+
+
+# ── Execution ─────────────────────────────────────────────────────────────
+
+# Grace period between the polite signal and the impolite one. earlyoom's
+# default is the same TERM-then-KILL dance: a browser tab or an editor can
+# flush state in well under this, and under real pressure it still dies.
+TERM_GRACE_SECS = 3.0
+
+
+def kill(p):
+    """Kill p, making sure the PID still belongs to the process we judged
+    (pidfd pins it, starttime proves it). SIGTERM first; if it is still
+    alive after TERM_GRACE_SECS, SIGKILL. Returns a pidfd to wait on, or
+    None if it was already gone. Raises OSError if the kill itself failed."""
+    try:
+        fd = os.pidfd_open(p.pid)
+    except ProcessLookupError:
+        return None
+    try:
+        if read_stat(p.pid)["starttime"] != p.starttime:
+            os.close(fd)
+            return None  # PID was recycled between judging and sentencing
+        signal.pidfd_send_signal(fd, signal.SIGTERM)
+        poller = select.poll()
+        poller.register(fd, select.POLLIN)
+        if not poller.poll(int(TERM_GRACE_SECS * 1000)):
+            signal.pidfd_send_signal(fd, signal.SIGKILL)
+        return fd
+    except (ProcessLookupError, FileNotFoundError):
+        os.close(fd)
+        return None
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def wait_for_death(fd, timeout):
+    if fd is None:
+        return True
+    try:
+        poller = select.poll()
+        poller.register(fd, select.POLLIN)
+        return bool(poller.poll(timeout * 1000))
+    finally:
+        os.close(fd)
+
+
+# ── Announcement ──────────────────────────────────────────────────────────
+
+def verdict_text(victim, runner_up, freed_guess, dry_run):
+    name = display_name(victim)
+    damning = sorted((r for r in victim.reasons if r[0] < 0), key=lambda r: r[0])[:2]
+    why = "; ".join(t for _, t in damning) or "it simply failed to hold the raccoon's attention"
+    summary = f"🦝 The raccoon {'would have eaten' if dry_run else 'ate'} {name}"
+    lines = [
+        f"{name} (pid {victim.pid}) was the least interesting thing in memory: {why}.",
+    ]
+    if not dry_run:
+        lines.append(f"About {fmt_bytes(freed_guess)} freed.")
+    if runner_up is not None:
+        praise = max(runner_up.reasons, key=lambda r: r[0], default=None)
+        saved = (f" because {praise[1]}" if praise and praise[0] > 0
+                 else ", narrowly, for reasons the raccoon will not disclose")
+        lines.append(f"Runner-up {display_name(runner_up)} survived{saved}.")
+    lines.append(random.choice(CATCHPHRASES))
+    return summary, lines
+
+
+def gvariant_str(s):
+    """Quote s as a GVariant text-format string literal. gdbus parses its
+    arguments as GVariant text, so process names (which anyone can choose)
+    must never be passed raw."""
+    out = ["'"]
+    for ch in s:
+        if ch in ("\\", "'"):
+            out.append("\\" + ch)
+        elif ord(ch) < 0x20 or ord(ch) == 0x7f:
+            out.append(f"\\u{ord(ch):04x}")
+        else:
+            out.append(ch)
+    out.append("'")
+    return "".join(out)
+
+
+def graphical_users():
+    """(uid, gid, home) for every regular user with a session bus."""
+    users = []
+    try:
+        entries = os.listdir("/run/user")
+    except OSError:
+        return users
+    for name in entries:
+        if not name.isdigit() or int(name) < 1000:
+            continue
+        uid = int(name)
+        if not os.path.exists(f"/run/user/{uid}/bus"):
+            continue
+        try:
+            pw = pwd.getpwuid(uid)
+        except KeyError:
+            continue
+        users.append((uid, pw.pw_gid, pw.pw_dir))
+    return users
+
+
+def notify_desktops(summary, body, children):
+    hints = ["'urgency': <byte 2>"]
+    if os.path.exists(SOUND_FILE):
+        hints.append(f"'sound-file': <{gvariant_str(SOUND_FILE)}>")
+    hint_str = "{" + ", ".join(hints) + "}"
+    for uid, gid, home in graphical_users():
+        cmd = [
+            "gdbus", "call", "--session", "--timeout", "5",
+            "--dest", "org.freedesktop.Notifications",
+            "--object-path", "/org/freedesktop/Notifications",
+            "--method", "org.freedesktop.Notifications.Notify",
+            gvariant_str("Raccoon OOM Court"), "0", gvariant_str("dialog-warning"),
+            gvariant_str(summary),
+            # GNOME parses the body as Pango markup; escape it.
+            gvariant_str(html.escape(body, quote=False)),
+            "@as []", hint_str, "-1",
+        ]
+        env = {
+            "PATH": "/usr/bin:/bin",
+            "HOME": home,
+            "XDG_RUNTIME_DIR": f"/run/user/{uid}",
+            "DBUS_SESSION_BUS_ADDRESS": f"unix:path=/run/user/{uid}/bus",
+        }
+        try:
+            children.append(subprocess.Popen(
+                cmd, env=env, user=uid, group=gid, extra_groups=[],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, start_new_session=True))
+        except OSError as e:
+            log(f"could not notify uid {uid}: {e}")
+
+
+def wall(summary, lines, children):
+    text = "\n".join([summary.replace("🦝 ", "[raccoon] "), *("  " + l for l in lines)]) + "\n"
+    try:
+        child = subprocess.Popen(
+            ["wall", "--nobanner"], stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True)
+        child.stdin.write(text.encode())
+        child.stdin.close()
+        children.append(child)
+    except OSError as e:
+        log(f"wall failed: {e}")
+
+
+def record(verdict):
+    """Persist the verdict for anyone who wants to gloat later (the panel
+    raccoon, sloppinux-status, a curious human)."""
+    try:
+        os.makedirs(RUN_DIR, exist_ok=True)
+        tmp = LAST_VERDICT + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(verdict, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, LAST_VERDICT)
+        mode = "a"
+        try:
+            if os.path.getsize(VERDICT_LOG) > VERDICT_LOG_MAX_BYTES:
+                mode = "w"
+        except OSError:
+            pass
+        with open(VERDICT_LOG, mode) as f:
+            f.write(json.dumps(verdict, ensure_ascii=False) + "\n")
+        os.chmod(VERDICT_LOG, 0o644)
+    except OSError as e:
+        log(f"could not record verdict in {RUN_DIR}: {e}")
+
+
+def reap(children):
+    """Collect finished notification helpers; kill ones that hang."""
+    now = time.monotonic()
+    alive = []
+    for child, started in children:
+        if child.poll() is not None:
+            continue
+        if now - started > 15:
+            child.kill()
+            child.wait()
+            continue
+        alive.append((child, started))
+    children[:] = alive
+
+
+def announce(victim, runner_up, freed_guess, pressure_desc, dry_run, notify, do_wall, children):
+    summary, lines = verdict_text(victim, runner_up, freed_guess, dry_run)
+    log(summary)
+    for line in lines:
+        log(f"  {line}")
+    record({
+        "time": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "dry_run": dry_run,
+        "pressure": pressure_desc,
+        "pid": victim.pid,
+        "name": display_name(victim),
+        "cmdline": victim.cmdline,
+        "uid": victim.uid,
+        "rss_bytes": victim.rss,
+        "anon_bytes": victim.anon,
+        "interest": round(victim.interest, 1),
+        "reasons": [t for _, t in victim.reasons],
+        "runner_up": display_name(runner_up) if runner_up else None,
+        "summary": summary,
+        "body": " ".join(lines),
+    })
+    spawned = []
+    if notify:
+        notify_desktops(summary, "\n".join(lines), spawned)
+    if do_wall:
+        wall(summary, lines, spawned)
+    started = time.monotonic()
+    children.extend((c, started) for c in spawned)
+
+
+# ── Main loop ─────────────────────────────────────────────────────────────
+
+def lock_memory():
+    """Keep the judge itself out of swap. Best effort; earlyoom does the same."""
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        mcl_current, mcl_future, mcl_onfault = 1, 2, 4
+        if libc.mlockall(mcl_current | mcl_future | mcl_onfault) != 0:
+            if libc.mlockall(mcl_current | mcl_future) != 0:
+                raise OSError(ctypes.get_errno(), os.strerror(ctypes.get_errno()))
+    except (OSError, AttributeError) as e:
+        log(f"mlockall failed ({e}); the raccoon may be swapped out under pressure")
+
+
+def print_ranking(ranked, protected):
+    print(f"{'interest':>8}  {'pid':>7}  {'anon':>9}  name")
+    for p in ranked[:12]:
+        print(f"{p.interest:8.1f}  {p.pid:7d}  {fmt_bytes(p.anon):>9}  {display_name(p)}")
+    print(f"({protected} load-bearing process(es) in the pool were spared on principle)")
+
+
+def run_judge(args):
+    mem_total = read_meminfo().get("MemTotal", 0)
+    ranked, protected = rank(scan(), mem_total)
+    if not ranked:
+        print("Nothing in memory is worth judging. The raccoon is disappointed.")
+        return 0
+    print_ranking(ranked, protected)
+    print()
+    victim = ranked[0]
+    runner_up = ranked[1] if len(ranked) > 1 else None
+    summary, lines = verdict_text(victim, runner_up, victim.anon, dry_run=True)
+    print(summary)
+    for line in lines:
+        print(f"  {line}")
+    if args.announce:
+        if os.geteuid() != 0:
+            print("--announce needs root (it notifies other users' sessions)", file=sys.stderr)
+            return 1
+        children = []
+        announce(victim, runner_up, victim.anon, "manual --judge", True,
+                 True, env_flag("SLOPPINUX_OOMD_WALL", "1"), children)
+        for child, _ in children:
+            try:
+                child.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                child.kill()
+    return 0
+
+
+def run_daemon():
+    if os.geteuid() != 0:
+        log("must run as root (it reads every process and kills some of them)")
+        return 1
+
+    pressure = Pressure(
+        env_num("SLOPPINUX_OOMD_MEM_PCT", 5),
+        env_num("SLOPPINUX_OOMD_SWAP_PCT", 10),
+        env_num("SLOPPINUX_OOMD_PSI_FULL", 60),
+    )
+    notify = env_flag("SLOPPINUX_OOMD_NOTIFY", "1")
+    do_wall = env_flag("SLOPPINUX_OOMD_WALL", "1")
+    dry_run = env_flag("SLOPPINUX_OOMD_DRY_RUN", "0")
+
+    lock_memory()
+    mem_total = read_meminfo().get("MemTotal", 0)
+    log(f"raccoon on duty: acting below {pressure.mem_pct:g}% available memory "
+        f"(with < {pressure.swap_pct:g}% swap free) or PSI full avg10 >= "
+        f"{pressure.psi_full:g}; {fmt_bytes(mem_total)} RAM"
+        + ("; DRY RUN, nothing will actually die" if dry_run else ""))
+
+    children = []
+    sentenced = {}  # pid -> monotonic time of sentencing
+    while True:
+        reap(children)
+        try:
+            low, tense, desc = pressure.sample()
+        except OSError as e:
+            log(f"could not read memory stats: {e}")
+            time.sleep(POLL_IDLE_SECS)
+            continue
+        if not low:
+            time.sleep(POLL_TENSE_SECS if tense else POLL_IDLE_SECS)
+            continue
+
+        now = time.monotonic()
+        sentenced = {pid: t for pid, t in sentenced.items() if now - t < RESENTENCE_SECS}
+        ranked, protected = rank(scan(), mem_total, exclude=sentenced)
+        if not ranked:
+            log(f"memory is low ({desc}) but every candidate is load-bearing; "
+                "leaving it to the kernel")
+            time.sleep(POLL_IDLE_SECS)
+            continue
+
+        victim = ranked[0]
+        runner_up = ranked[1] if len(ranked) > 1 else None
+        log(f"memory is low ({desc}); the raccoon is judging "
+            f"{len(ranked)} candidate(s), {protected} spared on principle")
+        for p in ranked[:5]:
+            log(f"  interest {p.interest:6.1f}  pid {p.pid:<7d} {fmt_bytes(p.anon):>9}  "
+                f"{p.cmdline[:120]}")
+
+        if dry_run:
+            announce(victim, runner_up, victim.anon, desc, True, notify, do_wall, children)
+            sentenced[victim.pid] = now
+            time.sleep(RESENTENCE_SECS)
+            continue
+
+        try:
+            fd = kill(victim)
+        except OSError as e:
+            log(f"failed to kill pid {victim.pid} ({victim.comm}): {e}")
+            sentenced[victim.pid] = now
+            continue
+        sentenced[victim.pid] = now
+        if fd is None:
+            log(f"pid {victim.pid} ({victim.comm}) left on its own before sentencing")
+            continue
+        died = wait_for_death(fd, DEATH_WAIT_SECS)
+        if not died:
+            log(f"pid {victim.pid} ({victim.comm}) is taking its time dying (D state?)")
+        announce(victim, runner_up, victim.anon, desc, False, notify, do_wall, children)
+        time.sleep(COOLDOWN_SECS)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="sloppinux-raccoon-oomd",
+        description="Userspace OOM killer that kills the least interesting process.",
+    )
+    parser.add_argument("--judge", action="store_true",
+                        help="rank who the raccoon would kill right now; kill nothing")
+    parser.add_argument("--announce", action="store_true",
+                        help="with --judge: also send the (dry-run) verdict to desktops "
+                             "and terminals (root only)")
+    args = parser.parse_args()
+    if args.announce and not args.judge:
+        parser.error("--announce only works together with --judge")
+    try:
+        return run_judge(args) if args.judge else run_daemon()
+    except KeyboardInterrupt:
+        # SIGTERM from systemd keeps its default action (die immediately),
+        # which is exactly right for a process that may be mid-sleep.
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())

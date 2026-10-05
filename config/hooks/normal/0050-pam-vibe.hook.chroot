@@ -1,0 +1,80 @@
+#!/bin/bash
+# "sudo as a vibe check." Compiles the PAM module pam_sloppinux_vibe.so and
+# wires it into /etc/pam.d/sudo so that, before the ordinary password prompt,
+# sudo asks the model whether you *sound* like root. A confident vibe grants;
+# anything else falls through to the password you already had.
+#
+# Why this hook is numbered below 0060: another hook (0060) shadows gcc with
+# the sloppiler joke compiler. Our module is real C that needs the real gcc,
+# so we MUST compile first.
+#
+# The C source ships in the image at /usr/src/sloppinux/ (reviewable, and
+# there for the curious); we only compile it here. The wiring into pam.d/sudo
+# is "sufficient" and placed BEFORE @include common-auth, so a passing vibe
+# grants root and a failing one simply hands over to the normal auth stack —
+# a broken module never locks anyone out.
+set -euo pipefail
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+SRC=/usr/src/sloppinux/pam_sloppinux_vibe.c
+# chroot/lib is a symlink to usr/lib; the loader and libpam look here.
+SECDIR=/lib/x86_64-linux-gnu/security
+SO="$SECDIR/pam_sloppinux_vibe.so"
+HELPER=/usr/libexec/sloppinux/vibe-check
+SUDO_PAM=/etc/pam.d/sudo
+PAM_LINE='auth sufficient pam_sloppinux_vibe.so threshold=0.7'
+
+echo "==> Building the sudo vibe check (pam_sloppinux_vibe.so)"
+
+command -v gcc >/dev/null || { echo "Error: gcc not found (did a 0060 shadow it early?)" >&2; exit 1; }
+[[ -f "$SRC" ]] || { echo "Error: $SRC missing (should ship in includes.chroot)" >&2; exit 1; }
+[[ -d "$SECDIR" ]] || { echo "Error: PAM security dir $SECDIR missing" >&2; exit 1; }
+[[ -f "$HELPER" ]] || { echo "Error: helper $HELPER missing (should ship in includes.chroot)" >&2; exit 1; }
+
+# The curious reader should not be able to execute the source as a program.
+chmod 0644 "$SRC"
+# The helper must be executable: the PAM module execs it directly.
+chmod 0755 "$HELPER"
+
+gcc -fPIC -shared -Wall -Wextra -o "$SO" "$SRC" -lpam
+
+# Fail loudly if the result isn't a usable PAM module.
+[[ -f "$SO" ]] || { echo "Error: compile produced no $SO" >&2; exit 1; }
+if ! nm -D "$SO" | grep -q '\bpam_sm_authenticate\b'; then
+    echo "Error: $SO does not export pam_sm_authenticate" >&2
+    nm -D "$SO" >&2 || true
+    exit 1
+fi
+if ! nm -D "$SO" | grep -q '\bpam_sm_setcred\b'; then
+    echo "Error: $SO does not export pam_sm_setcred" >&2
+    exit 1
+fi
+chmod 0644 "$SO"
+
+echo "==> Wiring the vibe check into $SUDO_PAM"
+[[ -f "$SUDO_PAM" ]] || { echo "Error: $SUDO_PAM missing" >&2; exit 1; }
+
+# Idempotent: only insert if our module isn't already referenced. Place the
+# line immediately BEFORE the first `@include common-auth` so "sufficient"
+# short-circuits to success on a good vibe and otherwise falls through to the
+# normal password stack.
+if grep -q 'pam_sloppinux_vibe\.so' "$SUDO_PAM"; then
+    echo "    already wired, leaving $SUDO_PAM alone"
+elif grep -q '^@include[[:space:]]\+common-auth' "$SUDO_PAM"; then
+    sed -i "0,/^@include[[:space:]]\+common-auth/s//$PAM_LINE\n&/" "$SUDO_PAM"
+else
+    echo "Error: no '@include common-auth' line in $SUDO_PAM to anchor to" >&2
+    exit 1
+fi
+
+# Verify the line landed before common-auth.
+vibe_ln="$(grep -n 'pam_sloppinux_vibe\.so' "$SUDO_PAM" | head -n1 | cut -d: -f1)"
+auth_ln="$(grep -n '^@include[[:space:]]\+common-auth' "$SUDO_PAM" | head -n1 | cut -d: -f1)"
+if [[ -z "$vibe_ln" || -z "$auth_ln" || "$vibe_ln" -ge "$auth_ln" ]]; then
+    echo "Error: vibe line is not before @include common-auth in $SUDO_PAM" >&2
+    cat "$SUDO_PAM" >&2
+    exit 1
+fi
+
+echo "==> sudo is now a vibe check (threshold 0.7). $SUDO_PAM:"
+cat "$SUDO_PAM"

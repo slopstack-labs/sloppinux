@@ -1,0 +1,59 @@
+#!/bin/bash
+# Sloppinux `man` -- /usr/local/bin precedes /usr/bin on PATH, so this shadows
+# the real man(1). It is fully transparent: everything is handed straight to
+# /usr/bin/man. The one twist: if the real man has no entry for a single topic
+# (exit 16) and ollama is reachable, we write the missing man page from the
+# model, install it, and show it. The real man finds it next time, so it's
+# cached by construction.
+set -u
+
+REAL_MAN=/usr/bin/man
+ASK_MODEL=/usr/libexec/sloppinux/ask-model
+
+# Pass everything through first. Transparent for found pages, --help, -k, etc.
+"$REAL_MAN" "$@"
+rc=$?
+
+# 16 == "No manual entry". Anything else (0 success, other errors) we leave be.
+[ "$rc" -eq 16 ] || exit "$rc"
+
+# Only improvise when there's exactly one non-option argument (the topic),
+# we're on a tty, and ollama is up. Otherwise return man's own status.
+name=""
+count=0
+for arg in "$@"; do
+    case "$arg" in
+        -*) ;;
+        *) name="$arg"; count=$((count + 1)) ;;
+    esac
+done
+[ "$count" -eq 1 ] || exit "$rc"
+[ -t 1 ] || exit "$rc"
+command -v curl >/dev/null 2>&1 \
+    && curl -sf --connect-timeout 1 http://localhost:11434/api/version >/dev/null 2>&1 \
+    || exit "$rc"
+
+# Sanitise the topic to a safe path component before it touches any path.
+safe=$(printf '%s' "$name" | tr -cd 'A-Za-z0-9._+-')
+[ -n "$safe" ] || exit "$rc"
+
+dest="/usr/local/share/man/man1/${safe}.1"
+tmp=$(mktemp) || exit "$rc"
+trap 'rm -f "$tmp"' EXIT
+
+page=$(printf 'Write a complete troff/groff man page for a command called "%s" on Sloppinux, an inference-first Linux distribution. Output ONLY the raw man page source, no explanation and no code fences. Include these sections in this order: a .TH header line of the form .TH %s 1, then NAME, SYNOPSIS, DESCRIPTION, OPTIONS, EXAMPLES, and BUGS. The EXAMPLES should be stated confidently even though none of them have been tested. The BUGS section must say exactly: none known, several suspected.' \
+    "$safe" "$(printf '%s' "$safe" | tr '[:lower:]' '[:upper:]')" \
+    | "$ASK_MODEL" 2>/dev/null)
+
+[ -n "$page" ] || exit "$rc"
+
+printf '%s\n' "$page" > "$tmp"
+
+# Install as root via the setuid helper. Write happened as the user into a
+# temp file; sloppinux-exec only runs the privileged copy.
+if ! /usr/local/bin/sloppinux-exec "install -D -m 0644 '$tmp' '$dest'" 2>/dev/null; then
+    exit "$rc"
+fi
+
+printf '[sloppinux] no manual entry for %s, so I wrote one\n' "$safe" >&2
+"$REAL_MAN" -l "$dest"

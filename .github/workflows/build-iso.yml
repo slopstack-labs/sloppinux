@@ -1,0 +1,71 @@
+# BEST-EFFORT manual ISO build. Not a release pipeline and not run on push.
+#
+# A GitHub-hosted runner has roughly 14 GB free out of the box, while a full
+# build needs a ~9 GB chroot, a ~4 GB squashfs and the ISO itself on top. So
+# this job first deletes the big preinstalled toolchains (dotnet, Android SDK,
+# GHC, CodeQL, cached docker images, swap) and builds with --no-model by
+# default to leave the ollama model out of the squashfs. It can still run out
+# of disk or hit the 6 h job limit if the package set grows — if it does,
+# build locally with ./build.sh or ./build-in-container.sh instead.
+name: build-iso (best effort)
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "ollama model to bake in (empty = --no-model; a model adds GBs and may not fit)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc \
+            /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/share/swift \
+            /usr/local/share/boost \
+            /usr/local/share/powershell \
+            /usr/local/lib/node_modules \
+            /opt/microsoft /opt/google /opt/az
+          sudo docker image prune --all --force >/dev/null || true
+          sudo swapoff -a && sudo rm -f /mnt/swapfile /swapfile || true
+          df -h /
+
+      - uses: actions/checkout@v4
+
+      - name: Build ISO in a privileged debian:trixie container
+        env:
+          MODEL: ${{ inputs.model }}
+        run: |
+          if [ -n "$MODEL" ]; then
+            ./build-in-container.sh --engine docker --model "$MODEL"
+          else
+            ./build-in-container.sh --engine docker --no-model
+          fi
+
+      - name: Fix ownership of build output
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" . || true
+
+      - name: Upload ISO
+        uses: actions/upload-artifact@v4
+        with:
+          name: sloppinux-iso
+          path: |
+            sloppinux-*.iso
+            sloppinux-*.iso.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7

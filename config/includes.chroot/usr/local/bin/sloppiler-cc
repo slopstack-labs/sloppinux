@@ -1,0 +1,91 @@
+#!/bin/bash
+# sloppiler-cc — a gcc-compatible-ish front end that routes compilation
+# intent through sloppiler (LLM → NASM → ld) instead of a deterministic
+# toolchain. /usr/local/bin/cc and /usr/local/bin/gcc point here (see
+# 0060-sloppiler-cc), shadowing /usr/bin/gcc, which is left untouched.
+#
+#   gcc -Wall -O2 -o hello hello.c   → sloppiler --optimistic --loop 5 \
+#                                        -model <picked> -o hello hello.c
+#
+# Only a single C/C++ source compiled-and-linked to an executable goes to
+# sloppiler. Anything a build system does — -c, -E, -S, -M*, --version,
+# -dumpmachine, -print-*, -shared, -x, multiple sources, linking .o/.a
+# files, autoconf/CMake/Meson probe sources — is exec'd into /usr/bin/gcc
+# with the original argv, so configure scripts, CMake and DKMS keep working.
+# If sloppiler is missing, ollama is down, or no model is pulled, the real
+# compiler takes over with a one-line note.
+#
+# Escape hatch: SLOPPILER_CC_REAL=1 gcc ...   (or call /usr/bin/gcc directly)
+
+REAL_CC=/usr/bin/gcc
+OLLAMA_URL="http://localhost:11434"
+
+[[ -z "${SLOPPILER_CC_REAL:-}" ]] || exec "$REAL_CC" "$@"
+
+note() { echo "[sloppiler-cc] $*" >&2; }
+
+src=""
+out="a.out"
+n_src=0
+n_ignored=0
+legacy=0   # 1 = this is a build-system-shaped invocation; real gcc handles it
+
+argv=("$@")
+i=0
+while (( i < ${#argv[@]} )); do
+    a=${argv[i]}
+    case "$a" in
+        # Modes, queries and outputs sloppiler has no opinion on.
+        -c|-E|-S|-M*|-shared|-r|-x|-x*|-fsyntax-only|-|--help|--help=*|-###|-v|--version|-dumpmachine|-dumpversion|-dumpfullversion|-dumpspecs|-print-*|--print-*)
+            legacy=1 ;;
+        -o)
+            (( i++ )); out=${argv[i]:-a.out} ;;
+        -o*)
+            out=${a#-o} ;;
+        # Flags whose value is the next word: ignore both words, count once.
+        -I|-L|-l|-D|-U|-include|-imacros|-isystem|-iquote|-idirafter|-iprefix|-Xlinker|-Xassembler|-Xpreprocessor|-T|-u|-z|-B|--param|-aux-info)
+            (( i++ )); (( n_ignored++ )) ;;
+        -*)
+            (( n_ignored++ )) ;;
+        *.c|*.cc|*.cpp|*.cxx|*.c++|*.C)
+            src=$a; (( n_src++ )) ;;
+        *)
+            # .o / .a / .so / .s inputs: this is linking or assembling.
+            legacy=1 ;;
+    esac
+    (( i++ ))
+done
+
+(( n_src == 1 )) || legacy=1
+
+# Toolchain probes compile-and-link a throwaway source with no -c. They need
+# a correct answer quickly, not an emotionally resonant one.
+case "$src" in
+    */CMakeFiles/*|*/CMakeScratch/*|*/meson-private/*|*conftest*) legacy=1 ;;
+esac
+case "${src##*/}" in
+    CMakeCCompilerId.*|CMakeCXXCompilerId.*|testCCompiler.*|testCXXCompiler.*|Check*Exists.*|CheckIncludeFile*.*|sanitycheck*.*|testfile.*) legacy=1 ;;
+esac
+
+(( legacy == 0 )) || exec "$REAL_CC" "$@"
+
+# fallback <reason> <original argv...>
+fallback() {
+    note "$1, falling back to the legacy deterministic toolchain ($REAL_CC)"
+    shift
+    exec "$REAL_CC" "$@"
+}
+
+command -v sloppiler >/dev/null 2>&1 || fallback "sloppiler not installed" "$@"
+curl -fsS --max-time 2 -o /dev/null "$OLLAMA_URL/api/tags" 2>/dev/null \
+    || fallback "ollama unreachable at $OLLAMA_URL" "$@"
+# sloppinux-pick-model honours SLOPPINUX_MODEL; sloppiler's own default
+# (llama3) is not something Sloppinux ships.
+model=${SLOPPINUX_MODEL:-$(/usr/local/bin/sloppinux-pick-model 2>/dev/null)}
+[[ -n "$model" ]] || fallback "no ollama model pulled" "$@"
+
+(( n_ignored == 0 )) || note "ignoring $n_ignored legacy toolchain flag$( (( n_ignored == 1 )) || echo s)"
+note "$src → $out via sloppiler (--optimistic --loop 5, model $model)"
+# Anything sloppiler shells out to must get the real compiler, never us.
+export SLOPPILER_CC_REAL=1
+exec sloppiler --optimistic --loop 5 -model "$model" -o "$out" "$src"

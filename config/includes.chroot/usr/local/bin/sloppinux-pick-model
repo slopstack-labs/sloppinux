@@ -2,8 +2,14 @@
 """
 Picks the best available ollama model that fits in current free RAM.
 Prints the model name to stdout, exits non-zero if nothing is available.
+
+The whole philosophy: use as much of your RAM as possible, all the time.
+Idle gigabytes are wasted gigabytes.
 """
-import json, sys, urllib.request
+import argparse, json, os, sys, urllib.request
+
+OLLAMA_URL = "http://localhost:11434"
+
 
 def available_ram_gb():
     with open('/proc/meminfo') as f:
@@ -12,18 +18,52 @@ def available_ram_gb():
                 return int(line.split()[1]) / (1024 * 1024)
     return 0
 
-def main():
+
+def fetch_models():
+    """Return the list of models, or exit non-zero (with NO stdout) if the
+    server is unreachable — callers depend on empty output meaning 'no pick'."""
     try:
-        req = urllib.request.urlopen("http://localhost:11434/api/tags", timeout=3)
-        models = json.loads(req.read()).get('models', [])
+        req = urllib.request.urlopen(f"{OLLAMA_URL}/api/tags", timeout=3)
+        return json.loads(req.read()).get('models', [])
     except Exception:
         sys.exit(1)
 
+
+def choose(sized, usable_gb):
+    """Largest model that fits free RAM. Minor tiebreak: when several fit,
+    prefer ones that aren't embedding models (they're useless as chat agents).
+    Returns the chosen name, or None if the list is empty."""
+    if not sized:
+        return None
+    fits = [(n, s) for n, s in sized if s <= usable_gb]
+    if fits:
+        non_embed = [(n, s) for n, s in fits if 'embed' not in n.lower()]
+        return (non_embed or fits)[0][0]
+    # Nothing fits cleanly — use the smallest available as a last resort.
+    return sized[-1][0]
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="sloppinux-pick-model",
+        description="Pick the beefiest ollama model that fits in free RAM.",
+    )
+    parser.add_argument("--list", action="store_true",
+                        help="list every model with its size and mark the pick")
+    args = parser.parse_args()
+
+    # Explicit override wins — don't even bother the server.
+    override = os.environ.get("SLOPPINUX_MODEL")
+    if override and not args.list:
+        print(override)
+        return
+
+    models = fetch_models()
     if not models:
         sys.exit(1)
 
     ram_gb = available_ram_gb()
-    # Leave 2 GB headroom for the OS and other processes
+    # Leave 2 GB headroom for the OS and other processes.
     usable_gb = max(0.0, ram_gb - 2.0)
 
     sized = sorted(
@@ -32,14 +72,20 @@ def main():
         reverse=True,
     )
 
-    # Largest model that fits
-    for name, size_gb in sized:
-        if size_gb <= usable_gb:
-            print(name)
-            return
+    picked = override or choose(sized, usable_gb)
 
-    # Nothing fits cleanly — use the smallest available as a last resort
-    print(sized[-1][0])
+    if args.list:
+        print(f"# {ram_gb:.1f} GB RAM free, {usable_gb:.1f} GB usable (2 GB headroom)")
+        for name, size_gb in sized:
+            mark = " <- pick" if name == picked else ""
+            print(f"{size_gb:6.2f} GB  {name}{mark}")
+        return
+
+    if picked:
+        print(picked)
+    else:
+        sys.exit(1)
+
 
 if __name__ == '__main__':
     main()

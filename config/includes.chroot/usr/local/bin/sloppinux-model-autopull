@@ -1,0 +1,241 @@
+#!/usr/bin/env python3
+"""
+sloppinux-model-autopull
+
+First-boot capability-surface expansion for INSTALLED Sloppinux systems.
+
+The ISO ships one small baked model so `ai` works offline on any hardware.
+Once installed onto real disk, this pulls ONE larger model sized to the
+machine's total RAM, so sloppinux-pick-model has something worth picking.
+
+Runs from sloppinux-model-autopull.service. Behaviour:
+  * live session (/run/live/medium exists): do nothing. The overlay there is
+    RAM-backed, so a multi-GB pull would eat the memory the model needs.
+  * no ollama API / no network: exit 0 WITHOUT the marker, retry next boot.
+  * pull fails while online: count it; after MAX_FAILURES, give up for good.
+  * success, already present, or machine too small: write the marker.
+Delete MARKER (and FAILURES) to make it run again.
+"""
+import json
+import os
+import shutil
+import sys
+import time
+import urllib.error
+import urllib.request
+
+OLLAMA_URL = "http://127.0.0.1:11434"
+REGISTRY_PROBE_URL = "https://registry.ollama.ai/v2/"
+STATE_DIR = "/var/lib/sloppinux"
+MARKER = os.path.join(STATE_DIR, "model-autopull.done")
+FAILURES = os.path.join(STATE_DIR, "model-autopull.failures")
+MAX_FAILURES = 3
+# Where ollama.service (User=ollama, HOME=/usr/share/ollama) keeps blobs;
+# only used to check free disk space before committing to a 20 GB download.
+MODELS_DIR = "/usr/share/ollama/.ollama/models"
+
+OLLAMA_WAIT_SECS = 120
+NETWORK_WAIT_SECS = 120
+DISK_HEADROOM_GB = 5.0
+# MemTotal is always a bit under the number on the box (firmware, iGPU
+# carve-outs), so an "8 GB" laptop reports ~7.6 GiB. Without slack every
+# machine would land one tier lower than intended.
+RAM_SLACK_GIB = 0.75
+
+# (minimum total RAM in GiB, model, approximate download size in GB)
+# Largest first. Sizes are the Q4 defaults from the ollama library and only
+# drive the disk-space check, so rough is fine.
+TIERS = [
+    (40, "qwen2.5:32b", 20.0),
+    (20, "qwen2.5:14b", 9.0),
+    (12, "llama3.1:8b", 4.9),
+    (6, "llama3.2:3b", 2.0),
+]
+
+
+def log(msg):
+    # stdout goes to the journal via the unit; flush so lines aren't held
+    # back for the duration of a multi-GB download.
+    print(msg, flush=True)
+
+
+def write_marker(reason):
+    os.makedirs(STATE_DIR, exist_ok=True)
+    with open(MARKER, "w") as f:
+        f.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S%z')} {reason}\n")
+    try:
+        os.remove(FAILURES)
+    except FileNotFoundError:
+        pass
+
+
+def record_failure():
+    os.makedirs(STATE_DIR, exist_ok=True)
+    try:
+        with open(FAILURES) as f:
+            count = int(f.read().strip() or 0)
+    except (FileNotFoundError, ValueError):
+        count = 0
+    count += 1
+    with open(FAILURES, "w") as f:
+        f.write(f"{count}\n")
+    return count
+
+
+def total_ram_gib():
+    with open("/proc/meminfo") as f:
+        for line in f:
+            if line.startswith("MemTotal:"):
+                return int(line.split()[1]) / (1024 * 1024)
+    return 0.0
+
+
+def free_disk_gb(path):
+    # The models dir may not exist yet if nothing was baked; walk up to the
+    # nearest existing parent, which is on the same filesystem.
+    while not os.path.exists(path) and path != "/":
+        path = os.path.dirname(path)
+    return shutil.disk_usage(path).free / 1e9
+
+
+def ollama_tags():
+    with urllib.request.urlopen(f"{OLLAMA_URL}/api/tags", timeout=5) as r:
+        return [m.get("name", "") for m in json.loads(r.read()).get("models", [])]
+
+
+def wait_for_ollama():
+    deadline = time.monotonic() + OLLAMA_WAIT_SECS
+    while True:
+        try:
+            return ollama_tags()
+        except (urllib.error.URLError, OSError, ValueError):
+            if time.monotonic() >= deadline:
+                return None
+            time.sleep(3)
+
+
+def wait_for_registry():
+    """True once the ollama registry is reachable at all (any HTTP answer)."""
+    deadline = time.monotonic() + NETWORK_WAIT_SECS
+    while True:
+        try:
+            urllib.request.urlopen(REGISTRY_PROBE_URL, timeout=10).close()
+            return True
+        except urllib.error.HTTPError:
+            # 401/404/etc: we reached it, which is all we wanted to know.
+            return True
+        except (urllib.error.URLError, OSError):
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(10)
+
+
+def normalize(name):
+    return name if ":" in name else f"{name}:latest"
+
+
+def pick_tier(ram_gib, free_gb):
+    """Largest model that fits the RAM tier AND the free disk space."""
+    for min_gib, model, size_gb in TIERS:
+        if ram_gib + RAM_SLACK_GIB < min_gib:
+            continue
+        if size_gb + DISK_HEADROOM_GB > free_gb:
+            log(f"skipping {model}: needs ~{size_gb + DISK_HEADROOM_GB:.0f} GB free, "
+                f"have {free_gb:.1f} GB")
+            continue
+        return model
+    return None
+
+
+def pull(model):
+    """Pull via the ollama API, logging coarse progress. Raises on failure."""
+    req = urllib.request.Request(
+        f"{OLLAMA_URL}/api/pull",
+        data=json.dumps({"model": model, "stream": True}).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    last_status = None
+    last_pct = {}
+    # The timeout is per socket read, not for the whole download: ollama
+    # streams a status line at least every few seconds while it's working,
+    # so 10 minutes of silence means it's stuck.
+    with urllib.request.urlopen(req, timeout=600) as r:
+        for raw in r:
+            raw = raw.strip()
+            if not raw:
+                continue
+            msg = json.loads(raw)
+            if "error" in msg:
+                raise RuntimeError(msg["error"])
+            status = msg.get("status", "")
+            total = msg.get("total") or 0
+            completed = msg.get("completed") or 0
+            digest = msg.get("digest")
+            if digest and total:
+                pct = int(completed * 100 / total) // 10 * 10
+                if pct != last_pct.get(digest):
+                    last_pct[digest] = pct
+                    log(f"{model}: {status} {pct}% of {total / 1e9:.2f} GB")
+            elif status != last_status:
+                log(f"{model}: {status}")
+            last_status = status
+    if last_status != "success":
+        raise RuntimeError(f"pull stream ended with status {last_status!r}")
+
+
+def main():
+    if os.path.exists("/run/live/medium"):
+        log("live session detected, not pulling onto a RAM-backed overlay")
+        return 0
+    if os.path.exists(MARKER):
+        log(f"already done ({MARKER} exists)")
+        return 0
+
+    tags = wait_for_ollama()
+    if tags is None:
+        log(f"ollama API not reachable at {OLLAMA_URL} after {OLLAMA_WAIT_SECS}s, "
+            "will retry next boot")
+        return 0
+
+    ram = total_ram_gib()
+    free = free_disk_gb(MODELS_DIR)
+    log(f"total RAM {ram:.1f} GiB, {free:.1f} GB free for models, "
+        f"installed models: {', '.join(tags) or 'none'}")
+
+    model = pick_tier(ram, free)
+    if model is None:
+        log("no larger model fits this machine, keeping the baked model only")
+        write_marker("nothing-fits")
+        return 0
+
+    if normalize(model) in {normalize(t) for t in tags}:
+        log(f"{model} already present, nothing to do")
+        write_marker(f"present {model}")
+        return 0
+
+    if not wait_for_registry():
+        log(f"no network (registry unreachable after {NETWORK_WAIT_SECS}s), "
+            "will retry next boot")
+        return 0
+
+    log(f"pulling {model} for a {ram:.0f} GiB machine (this can take a while)")
+    try:
+        pull(model)
+    except Exception as e:  # network drop, registry error, disk full, ...
+        n = record_failure()
+        if n >= MAX_FAILURES:
+            log(f"pull of {model} failed ({e}); {n} failures, giving up. "
+                f"Remove {MARKER} and {FAILURES} to try again.")
+            write_marker(f"gave-up {model}")
+        else:
+            log(f"pull of {model} failed ({e}); attempt {n}/{MAX_FAILURES}, "
+                "will retry next boot")
+        return 0
+
+    log(f"{model} is ready; sloppinux-pick-model will use it when RAM allows")
+    write_marker(f"pulled {model}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,5 @@
+# Build dependency for "sudo as a vibe check": the PAM development headers
+# (security/pam_modules.h, pam_ext.h) and libpam so the 0050-pam-vibe hook
+# can compile pam_sloppinux_vibe.so against them. The runtime libpam itself
+# is already pulled in by the base/desktop stack.
+libpam0g-dev

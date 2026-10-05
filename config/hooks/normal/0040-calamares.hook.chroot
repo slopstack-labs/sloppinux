@@ -1,16 +1,32 @@
 #!/bin/bash
-# Wires up Sloppinux branding for Calamares and sets it to auto-launch.
+# Wires up Sloppinux branding for Calamares, sets it to auto-launch (live
+# session only — see /usr/local/bin/sloppinux-installer-autostart), and
+# teaches the installer to scrub live-only artefacts out of the target.
 set -euo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 BRANDING_DIR=/etc/calamares/branding/sloppinux
+SETTINGS=/etc/calamares/settings.conf
+TARGET_FIXUP=/usr/libexec/sloppinux/calamares-target-fixup
 
 # Copy logo into branding directory
 cp /usr/share/pixmaps/sloppinux-logo.png "$BRANDING_DIR/sloppinux-logo.png"
 
+# Version strings come from the build env (see build.sh), same source as
+# /etc/os-release, so the installer never advertises a stale point release.
+[ -f /etc/sloppinux-build.env ] && . /etc/sloppinux-build.env
+SLOPPINUX_VERSION="${SLOPPINUX_VERSION:-dev}"
+SLOPPINUX_DEBIAN_VERSION="${SLOPPINUX_DEBIAN_VERSION:-$(cat /etc/debian_version 2>/dev/null || echo unknown)}"
+sed -i \
+    -e "s/^\( *version: *\).*/\1\"${SLOPPINUX_VERSION}\"/" \
+    -e "s/^\( *shortVersion: *\).*/\1\"${SLOPPINUX_VERSION}\"/" \
+    -e "s/^\( *versionedName: *\).*/\1\"Sloppinux ${SLOPPINUX_VERSION} (Trixie ${SLOPPINUX_DEBIAN_VERSION})\"/" \
+    -e "s/^\( *shortVersionedName: *\).*/\1\"Sloppinux ${SLOPPINUX_VERSION}\"/" \
+    "$BRANDING_DIR/branding.desc"
+
 # Point Calamares at the sloppinux branding (calamares-settings-debian sets 'debian')
-if [[ -f /etc/calamares/settings.conf ]]; then
-    sed -i 's/^branding:.*/branding: sloppinux/' /etc/calamares/settings.conf
+if [[ -f "$SETTINGS" ]]; then
+    sed -i 's/^branding:.*/branding: sloppinux/' "$SETTINGS"
 
     # fix-grub-packages isn't a real Calamares module type — it's a named
     # instance of the generic shellprocess module, which Calamares only
@@ -18,34 +34,103 @@ if [[ -f /etc/calamares/settings.conf ]]; then
     # sequence via its instance key. Per Calamares' own settings.conf docs,
     # the instance key is `<module>@<id>` (module first), e.g.
     # "packagechooserq@licenseq" — NOT `<id>@<module>`.
-    sed -i '/^modules-search:/a\
+    #
+    # Guarded so a re-run (or a future calamares-settings-debian that
+    # already ships an `instances:` block) can't declare it twice.
+    if ! grep -q '^ *- shellprocess@fix-grub-packages$' "$SETTINGS"; then
+        if grep -q '^instances:' "$SETTINGS"; then
+            if ! grep -q '^instances: *$' "$SETTINGS"; then
+                echo "0040-calamares: $SETTINGS has a non-block 'instances:' key; refusing to guess" >&2
+                exit 1
+            fi
+            sed -i '/^instances: *$/a\
+- id: fix-grub-packages\
+  module: shellprocess\
+  config: fix-grub-packages.conf' "$SETTINGS"
+        else
+            sed -i '/^modules-search:/a\
 instances:\
 - id: fix-grub-packages\
   module: shellprocess\
-  config: fix-grub-packages.conf' /etc/calamares/settings.conf
+  config: fix-grub-packages.conf' "$SETTINGS"
+        fi
 
-    # Inject it right before the "bootloader" step. Anchored to the exact
-    # line so it doesn't also match "bootloader-config" (a previous
-    # unanchored version of this sed matched both, registering
-    # fix-grub-packages twice and breaking module loading).
-    sed -i 's/^\( *\)- bootloader$/\1- shellprocess@fix-grub-packages\n\1- bootloader/' /etc/calamares/settings.conf
+        # Inject it right before the "bootloader" step. Anchored to the exact
+        # line so it doesn't also match "bootloader-config" (a previous
+        # unanchored version of this sed matched both, registering
+        # fix-grub-packages twice and breaking module loading).
+        sed -i 's/^\( *\)- bootloader$/\1- shellprocess@fix-grub-packages\n\1- bootloader/' "$SETTINGS"
+    fi
+
+    # Fail the build loudly rather than ship an installer that silently
+    # skips the target fixup (or registers it twice).
+    n_seq=$(grep -c '^ *- shellprocess@fix-grub-packages$' "$SETTINGS" || true)
+    n_inst=$(grep -c '^- id: fix-grub-packages$' "$SETTINGS" || true)
+    if [[ "$n_seq" != 1 || "$n_inst" != 1 ]]; then
+        echo "0040-calamares: expected fix-grub-packages declared/referenced once, got instances=$n_inst sequence=$n_seq" >&2
+        exit 1
+    fi
 fi
 
-# Also patch the desktop entry in case calamares-settings-debian overwrote our include
-cat > /usr/share/applications/calamares.desktop <<'EOF'
+# Branded "Install Sloppinux" launcher. We ship it under its OWN filename
+# (sloppinux-install.desktop) and deliberately do NOT touch
+# /usr/share/applications/calamares.desktop: that path is a dpkg diversion
+# owned by calamares-settings-debian (preinst renames the real file to
+# calamares.desktop.orig). Writing a real file there would leave two real
+# files at the diverted path and make `dpkg-divert --rename` refuse to
+# un-divert when calamares-settings-debian is removed at install time,
+# aborting the installer with apt exit 100. See the target-fixup guard below.
+cat > /usr/share/applications/sloppinux-install.desktop <<'EOF'
 [Desktop Entry]
 Type=Application
 Name=Install Sloppinux
 GenericName=System Installer
 Comment=Install Sloppinux to disk
 TryExec=calamares
-Exec=calamares
+Exec=/usr/local/bin/sloppinux-installer-autostart
 Icon=/usr/share/pixmaps/sloppinux-logo.png
 Terminal=false
 Categories=System;
+Keywords=calamares;install;installer;sloppinux;
+StartupWMClass=calamares
 EOF
 
+# Exactly one installer tile in the app grid: ours. Hide the two stock
+# launchers (calamares.desktop from the calamares package, and
+# calamares-install-debian.desktop from calamares-settings-debian) with
+# NoDisplay. We edit them in place (not via the diversion) so dpkg still
+# owns and tracks calamares.desktop byte-for-byte as shipped.
+for stock in /usr/share/applications/calamares.desktop \
+             /usr/share/applications/calamares-install-debian.desktop; do
+    if [[ -f "$stock" ]] && ! grep -q '^NoDisplay=' "$stock"; then
+        sed -i '/^\[Desktop Entry\]/a NoDisplay=true' "$stock"
+    fi
+done
+
+chmod 0755 /usr/local/bin/sloppinux-installer-autostart 2>/dev/null || true
+
 mkdir -p /etc/calamares/modules
+
+# Override the target-side packages module. calamares-settings-debian ships
+# a stock packages.conf whose `remove:` list names packages that are NOT in
+# the Sloppinux image (live-boot-doc, live-config-doc, live-task-localisation,
+# live-task-recommended). apt errors "Unable to locate package" on those and
+# the whole packages step returns exit 100, failing the install. We rewrite
+# it to touch only packages that actually ship, and use `try_remove` so the
+# step stays green even if the package set drifts in future builds (unlike
+# `remove`, try_remove does not fail when a package is already absent).
+cat > /etc/calamares/modules/packages.conf <<'EOF'
+---
+backend: apt
+
+operations:
+  - try_remove:
+      - 'live-boot'
+      - 'live-config'
+      - 'live-config-systemd'
+      - 'live-tools'
+      - 'calamares-settings-debian'
+EOF
 
 # Set up unpackfs to install from the live squashfs
 cat > /etc/calamares/modules/unpackfs.conf <<'EOF'
@@ -69,17 +154,140 @@ installEFIFallback: true
 grubInstallArguments: []
 EOF
 
-# Shellprocess that runs inside the target chroot before bootloader installation.
-# Swaps grub-efi-amd64 (from squashfs) for grub-pc when installing to a BIOS system.
-cat > /etc/calamares/modules/fix-grub-packages.conf <<'EOF'
+# Target-side fixup script. It lives in the squashfs, so unpackfs copies it
+# into the target, and the shellprocess instance below just runs it there.
+#
+# Why a script file instead of an inline shellprocess command: Calamares
+# 3.3 macro-expands commands ($VAR and ${VAR}) against its own dictionary
+# (ROOT, USER, ...) and FAILS the job with "The commands use variables that
+# are not defined" on anything else — so inline shell variables are a
+# trap. And the previous `- "-": |` map form had no `command:` key, which
+# Calamares drops with a "Bad CommandLine element" warning, i.e. the grub
+# swap never actually ran.
+mkdir -p "$(dirname "$TARGET_FIXUP")"
+cat > "$TARGET_FIXUP" <<'EOF'
+#!/bin/bash
+# Runs chrooted inside the freshly unpacked target (Calamares shellprocess
+# instance "fix-grub-packages", sequenced right before "bootloader").
+# Every step is best-effort: a failed cleanup must never brick an install.
+export DEBIAN_FRONTEND=noninteractive
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+log() { echo "[sloppinux-target-fixup] $*"; }
+
+# 1. Bootloader packages. The squashfs ships grub-efi-amd64; on a BIOS
+#    machine swap it for grub-pc before Calamares runs grub-install.
+if [ ! -d /sys/firmware/efi ]; then
+    log "BIOS firmware detected, swapping grub-efi for grub-pc"
+    apt-get remove -y grub-efi-amd64 grub-efi-amd64-signed shim-signed efibootmgr || true
+    apt-get install -y grub-pc grub-common || true
+fi
+
+# 2. Live-only configuration that is not owned by any package and would
+#    otherwise survive into the installed system.
+#    - calamares.desktop autostart: would pop the installer on every login
+#      (the wrapper also refuses to run off live media, belt + braces).
+#    - sloppinux-live sudoers: passwordless sudo for the live user "user".
+log "removing live-session artefacts"
+rm -f /etc/xdg/autostart/calamares.desktop
+rm -f /etc/sudoers.d/sloppinux-live
+
+# 3. GDM autologin. The live image autologins "user", which does not exist
+#    on the installed system unless the human picked that name. Calamares'
+#    displaymanager module (earlier in the sequence) already rewrote
+#    [daemon] with the real user's choice and stripped AutomaticLogin= and
+#    AutomaticLoginEnable=True — but its match is case-sensitive, so the
+#    live image's lowercase "AutomaticLoginEnable=true" survives and, being
+#    later in the file, wins. Keep Calamares' first value, drop the rest.
+GDM_CONF=/etc/gdm3/custom.conf
+if [ -f "$GDM_CONF" ] && ! getent passwd user >/dev/null 2>&1; then
+    log "scrubbing live autologin from $GDM_CONF"
+    tmp=$(mktemp) || tmp=""
+    if [ -n "$tmp" ]; then
+        awk '
+            { k = tolower($0); gsub(/[ \t]/, "", k) }
+            k == "automaticlogin=user" { next }
+            k ~ /^automaticloginenable=/ { if (seen_enable++) next }
+            { print }
+        ' "$GDM_CONF" > "$tmp" && cat "$tmp" > "$GDM_CONF"
+        rm -f "$tmp"
+    fi
+    # No autologin user left at all -> no autologin.
+    if ! grep -qiE '^[[:space:]]*AutomaticLogin[[:space:]]*=' "$GDM_CONF"; then
+        sed -i -E '/^[[:space:]]*[Aa]utomatic[Ll]ogin[Ee]nable[[:space:]]*=[[:space:]]*[Tt]rue/d' "$GDM_CONF"
+    fi
+fi
+
+# 4. Diversion safety net. calamares-settings-debian diverts
+#    /usr/share/applications/calamares.desktop (preinst renames the real file
+#    to calamares.desktop.orig). On removal its postrm un-diverts with
+#    `dpkg-divert --rename`, which refuses if a real file exists at BOTH the
+#    diverted path AND its .orig target. Sloppinux takes approach (b) — we
+#    never write a real file to the diverted path (our launcher is
+#    sloppinux-install.desktop) — so under a correct build this guard finds
+#    nothing to do. It is belt-and-braces for upgraded-in-place images where
+#    an older build may have left a stray calamares.desktop: if both files
+#    are present and our calamares.desktop is NOT dpkg-owned, drop it so the
+#    un-divert can proceed. We never touch the .orig original (that IS the
+#    real package file).
+DIVERTED=/usr/share/applications/calamares.desktop
+if [ -f "$DIVERTED" ] && [ -f "$DIVERTED.orig" ]; then
+    if ! dpkg-query -S "$DIVERTED" >/dev/null 2>&1; then
+        log "resolving calamares.desktop diversion: dropping non-dpkg copy"
+        rm -f "$DIVERTED" || true
+    fi
+fi
+
+# 4a. The installer itself. The "packages" step (later in the sequence) now
+#     try_removes calamares-settings-debian; we remove calamares here, which
+#     pulls calamares-settings-debian with it as a reverse-dependency, so by
+#     the time the packages step runs there is nothing left to do (apt treats
+#     that as success). This also drops the installer launcher from the app
+#     grid. Best-effort: if the removal is contended or fails, the packages
+#     step is the backstop and a leftover installer never bricks the system.
+if dpkg -s calamares >/dev/null 2>&1; then
+    log "removing calamares from the target"
+    apt-get remove -y calamares || true
+fi
+rm -rf /etc/calamares
+rm -f /usr/local/bin/sloppinux-installer-autostart
+
+# 4b. Post-install survey. Capture what the human did to their disks so
+#     sloppinux-install-survey.service can have the model grade it on first
+#     boot (lsblk -J is unreliable this deep in a chroot; fstab, df and
+#     /proc/partitions are not). Best-effort and quiet, like everything here.
+SURVEY=/var/lib/sloppinux/install-survey.txt
+log "capturing partitioning for the post-install survey"
+if mkdir -p /var/lib/sloppinux 2>/dev/null; then
+    {
+        echo "# Sloppinux install survey, captured $(date -u '+%Y-%m-%d %H:%M UTC' 2>/dev/null)"
+        if [ -d /sys/firmware/efi ]; then echo "firmware: UEFI"; else echo "firmware: BIOS"; fi
+        echo
+        echo "## /etc/fstab"
+        cat /etc/fstab 2>/dev/null || echo "(no fstab, which is its own kind of statement)"
+        echo
+        echo "## df -h /"
+        df -h / 2>/dev/null || echo "(df unavailable)"
+        echo
+        echo "## /proc/partitions"
+        cat /proc/partitions 2>/dev/null || echo "(/proc not mounted)"
+    } > "$SURVEY" 2>/dev/null || true
+    chmod 0644 "$SURVEY" 2>/dev/null || true
+fi
+
+# 5. Self-destruct. Single-use infrastructure is the most scalable kind.
+rm -f "$0"
+rmdir /usr/libexec/sloppinux 2>/dev/null || true
+exit 0
+EOF
+chmod 0755 "$TARGET_FIXUP"
+
+# Shellprocess instance that runs the fixup inside the target chroot before
+# bootloader installation. Leading "-" = don't fail the install if it does.
+# No $ anywhere in the command, so Calamares' variable expansion is a no-op.
+cat > /etc/calamares/modules/fix-grub-packages.conf <<EOF
 ---
 dontChroot: false
-timeout: 120
+timeout: 900
 script:
-    - "-": |
-          export DEBIAN_FRONTEND=noninteractive
-          if [ ! -d /sys/firmware/efi ]; then
-              apt-get remove -y grub-efi-amd64 grub-efi-amd64-signed shim-signed efibootmgr 2>/dev/null || true
-              apt-get install -y grub-pc grub-common 2>/dev/null || true
-          fi
+    - "-/bin/bash $TARGET_FIXUP"
 EOF

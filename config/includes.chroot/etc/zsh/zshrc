@@ -1,3 +1,5 @@
 # System-wide zshrc for Sloppinux
 # Source the LLM command handler so zsh gets command_not_found_handler too
 [[ -f /etc/profile.d/sloppinux-llm.sh ]] && source /etc/profile.d/sloppinux-llm.sh
+# Source the typo-forgiving cd/ls so zsh gets them too
+[[ -f /etc/profile.d/sloppinux-fuzzy.sh ]] && source /etc/profile.d/sloppinux-fuzzy.sh
