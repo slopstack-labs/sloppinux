@@ -1,5 +1,6 @@
 import Adw from 'gi://Adw';
 import Gio from 'gi://Gio';
+import GLib from 'gi://GLib';
 import Gtk from 'gi://Gtk';
 
 import {ExtensionPreferences} from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
@@ -47,6 +48,21 @@ function entryRow(settings, key, {title, subtitle}) {
     return row;
 }
 
+// Same check as isWebUrl() in extension.js, which runs it again at use
+// time. Keep the two in step.
+function isWebUrl(text) {
+    const s = (text ?? '').trim();
+    if (!/^https?:\/\/\S+$/i.test(s))
+        return false;
+    try {
+        const uri = GLib.Uri.parse(s, GLib.UriFlags.NONE);
+        return ['http', 'https'].includes(uri.get_scheme().toLowerCase()) &&
+            !!uri.get_host();
+    } catch (e) {
+        return false;
+    }
+}
+
 export default class RaccoonPreferences extends ExtensionPreferences {
     fillPreferencesWindow(window) {
         const settings = this.getSettings();
@@ -74,11 +90,16 @@ export default class RaccoonPreferences extends ExtensionPreferences {
         const soundGroup = new Adw.PreferencesGroup({title: 'Sound'});
         soundGroup.add(switchRow(settings, 'sound-enabled', {
             title: 'Play sounds',
-            subtitle: 'Feeding, poking, and tantrums make noise',
+            subtitle: 'Chitters, chomps, purrs, squeals and growls, as appropriate',
+        }));
+        soundGroup.add(spinRow(settings, 'pipe-chance', {
+            title: 'Metal pipe chance',
+            subtitle: 'Probability (0–1) a tantrum drops the pipe instead of growling',
+            min: 0, max: 1, step: 0.05, digits: 2,
         }));
         soundGroup.add(entryRow(settings, 'sound-file', {
-            title: 'Sound file',
-            subtitle: 'Path to the .oga/.ogg/.wav played',
+            title: 'Custom sound',
+            subtitle: 'Path to a .oga/.ogg/.wav that replaces its voice for everything. Empty = the raccoon',
         }));
 
         const systemNotifGroup = new Adw.PreferencesGroup({
@@ -175,6 +196,40 @@ export default class RaccoonPreferences extends ExtensionPreferences {
         page.add(systemNotifGroup);
         page.add(popupGroup);
         page.add(tantrumGroup);
+
+        // Factory reset. Every row is bound to its key (or listens for
+        // changes), so the whole window follows along without reopening.
+        const resetGroup = new Adw.PreferencesGroup({
+            title: 'Start over',
+            description: 'Every setting on both pages goes back to how Sloppinux shipped it. Feral mode included. Especially feral mode.',
+        });
+        const resetRow = new Adw.ButtonRow({
+            title: 'Reset to defaults',
+            start_icon_name: 'edit-undo-symbolic',
+        });
+        resetRow.add_css_class('destructive-action');
+        resetRow.connect('activated', () => {
+            const dialog = new Adw.AlertDialog({
+                heading: 'Reset the raccoon?',
+                body: 'All settings, both pages, back to the defaults. Your custom web pages go too. ' +
+                    'The raccoon will not remember being housebroken.',
+            });
+            dialog.add_response('cancel', 'Keep my settings');
+            dialog.add_response('reset', 'Reset');
+            dialog.set_response_appearance('reset', Adw.ResponseAppearance.DESTRUCTIVE);
+            dialog.default_response = 'cancel';
+            dialog.close_response = 'cancel';
+            dialog.connect('response', (_dialog, response) => {
+                if (response !== 'reset')
+                    return;
+                for (const key of settings.settings_schema.list_keys())
+                    settings.reset(key);
+                window.add_toast?.(new Adw.Toast({title: 'Back to factory raccoon.'}));
+            });
+            dialog.present(window);
+        });
+        resetGroup.add(resetRow);
+        page.add(resetGroup);
         window.add(page);
 
         // ----- Feral mode: its own page, with a loud warning up top ------
@@ -267,15 +322,82 @@ export default class RaccoonPreferences extends ExtensionPreferences {
         }));
         feralPage.add(feralActionsGroup);
 
+        // Where "Open a fun web page" goes. The custom rows are rebuilt from
+        // the key on every change, so gsettings edits and the reset show up.
+        const urlGroup = new Adw.PreferencesGroup({
+            title: 'Websites',
+            description: 'Where “Open a fun web page” sends your browser. Only http:// and https:// pages, ' +
+                'and if nothing usable is left it falls back to its own list.',
+        });
+        urlGroup.add(switchRow(settings, 'builtin-urls-enabled', {
+            title: 'Built-in reading list',
+            subtitle: 'A dozen raccoon-adjacent pages, curated by the raccoon',
+        }));
+        const addUrlRow = new Adw.EntryRow({
+            title: 'Add a page (https://…)',
+            show_apply_button: true,
+            input_purpose: Gtk.InputPurpose.URL,
+        });
+        const toast = title => window.add_toast?.(new Adw.Toast({title, timeout: 3}));
+        addUrlRow.connect('changed', () => addUrlRow.remove_css_class('error'));
+        addUrlRow.connect('apply', () => {
+            const url = addUrlRow.text.trim();
+            if (!url)
+                return;
+            if (!isWebUrl(url)) {
+                addUrlRow.add_css_class('error');
+                toast('Only http:// and https:// pages. The raccoon has standards.');
+                return;
+            }
+            const urls = settings.get_strv('custom-urls');
+            if (urls.includes(url))
+                toast('Already on the list.');
+            else
+                settings.set_strv('custom-urls', [...urls, url]);
+            addUrlRow.text = '';
+        });
+        urlGroup.add(addUrlRow);
+
+        let urlRows = [];
+        const rebuildUrlRows = () => {
+            for (const row of urlRows)
+                urlGroup.remove(row);
+            urlRows = settings.get_strv('custom-urls').map(url => {
+                const row = new Adw.ActionRow({
+                    title: url,
+                    use_markup: false,
+                    subtitle: isWebUrl(url) ? '' : 'Ignored: not an http(s) page',
+                });
+                const remove = new Gtk.Button({
+                    icon_name: 'user-trash-symbolic',
+                    valign: Gtk.Align.CENTER,
+                    tooltip_text: 'Remove',
+                });
+                remove.add_css_class('flat');
+                remove.connect('clicked', () => settings.set_strv('custom-urls',
+                    settings.get_strv('custom-urls').filter(u => u !== url)));
+                row.add_suffix(remove);
+                urlGroup.add(row);
+                return row;
+            });
+        };
+        const urlSyncId = settings.connect('changed::custom-urls', rebuildUrlRows);
+        rebuildUrlRows();
+        feralPage.add(urlGroup);
+
         // Grey out everything feral-specific while the master switch is off,
         // so it's obvious the sub-toggles are inert until you arm it.
         const syncFeralSensitivity = () => {
             const armed = settings.get_boolean('feral-mode');
             feralActionsGroup.sensitive = armed;
+            urlGroup.sensitive = armed;
         };
         const feralSyncId = settings.connect('changed::feral-mode', syncFeralSensitivity);
         syncFeralSensitivity();
-        window.connect('close-request', () => settings.disconnect(feralSyncId));
+        window.connect('close-request', () => {
+            settings.disconnect(feralSyncId);
+            settings.disconnect(urlSyncId);
+        });
 
         window.add(feralPage);
     }

@@ -26,13 +26,20 @@
     <key name="sound-enabled" type="b">
       <default>true</default>
       <summary>Play sounds</summary>
-      <description>Whether the raccoon plays a sound when fed, poked, or having a tantrum.</description>
+      <description>Whether the raccoon makes noise: it chitters when poked, chomps when fed, purrs when petted, squeals when thrown and growls or hisses during tantrums.</description>
     </key>
 
     <key name="sound-file" type="s">
-      <default>'/usr/share/sounds/sloppinux/stereo/pipe.oga'</default>
-      <summary>Sound file</summary>
-      <description>Path to the sound file played for feeding, poking, and tantrums.</description>
+      <default>''</default>
+      <summary>Custom sound (replaces the raccoon's voice)</summary>
+      <description>Path to a sound file (.oga/.ogg/.wav) played for everything the raccoon does, instead of its own voice. Empty means the raccoon's voice. A missing file means silence.</description>
+    </key>
+
+    <key name="pipe-chance" type="d">
+      <range min="0.0" max="1.0"/>
+      <default>0.1</default>
+      <summary>Metal pipe chance</summary>
+      <description>Probability that a tantrum drops the metal pipe instead of growling or hissing. Ignored while a custom sound is set.</description>
     </key>
 
     <key name="notifications-enabled" type="b">
@@ -128,7 +135,19 @@
     <key name="allow-launch-app" type="b">
       <default>true</default>
       <summary>Allow launching a harmless app / URL</summary>
-      <description>Whether a feral tantrum may open a fun web page (about raccoons) in your default browser via xdg-open.</description>
+      <description>Whether a feral tantrum may open a fun web page (about raccoons) in your default browser. It picks from the built-in list (see builtin-urls-enabled) and custom-urls.</description>
+    </key>
+
+    <key name="builtin-urls-enabled" type="b">
+      <default>true</default>
+      <summary>Use the built-in web pages</summary>
+      <description>Whether the "open a web page" mischief may pick from the raccoon's own reading list. If this is off and custom-urls holds no usable page, it uses the built-in list anyway.</description>
+    </key>
+
+    <key name="custom-urls" type="as">
+      <default>[]</default>
+      <summary>Custom web pages</summary>
+      <description>Extra pages the "open a web page" mischief may open. Only http:// and https:// URLs are ever opened; anything else is ignored.</description>
     </key>
 
     <key name="allow-shell-out" type="b">

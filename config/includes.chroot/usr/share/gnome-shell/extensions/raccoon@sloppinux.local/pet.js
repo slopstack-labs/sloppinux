@@ -608,6 +608,7 @@ export class RaccoonPet {
                 this._vy = vy;
                 this._spin = Math.sign(vx || 1) * Math.min(1440, Math.hypot(vx, vy));
                 this._setState('thrown', 10e6);
+                this._host._playSound('thrown');
             } else {
                 this._setState('idle', rand(1, 3) * 1e6);
             }
@@ -843,6 +844,7 @@ export class RaccoonPet {
                 this._setState('carry', th.seconds * 1e6);
                 this._pickCarryTarget();
                 this._say(pickOne(THEFT_QUIPS), 1400);
+                this._host._playSound('theft');
             } else if (t > this._stateUntil) {
                 this.stopCursorTheft();
             }
@@ -901,6 +903,7 @@ export class RaccoonPet {
         this._spin = -this._dir * 900;
         this._setState('thrown', 4e6);
         this._say(pickOne(SHAKEN_QUIPS), 1600);
+        this._host._playSound('shaken');
     }
 
     _syncMeter(t) {

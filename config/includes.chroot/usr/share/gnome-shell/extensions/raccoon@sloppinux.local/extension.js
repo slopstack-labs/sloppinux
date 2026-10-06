@@ -62,7 +62,26 @@ const TANTRUMS = [
     'It tried to wash its paws in the system tray.',
 ];
 
-const SOUND_FALLBACK = '/usr/share/sounds/sloppinux/stereo/pipe.oga';
+// The raccoon's voice: event name -> clips, one picked at random. Missing
+// files are skipped quietly. A custom `sound-file` replaces all of this,
+// and `pipe-chance` lets a tantrum reach for the metal pipe instead.
+const SOUND_DIR = '/usr/share/sounds/sloppinux/stereo';
+const PIPE_SOUND = 'pipe.oga';
+const SOUNDS = {
+    poke: ['raccoon-chitter.oga'],          // annoyed
+    theft: ['raccoon-chitter.oga'],         // it has your cursor now
+    feed: ['raccoon-chomp.oga'],
+    pet: ['raccoon-purr.oga'],              // raccoons do not purr. this one does
+    thrown: ['raccoon-squeal.oga'],
+    shaken: ['raccoon-squeal.oga'],         // lost the tug-of-war
+    tantrum: ['raccoon-growl.oga', 'raccoon-hiss.oga'],
+    nag: ['raccoon-trill.oga'],
+    letout: ['raccoon-trill.oga'],
+    catch: ['raccoon-trill.oga'],
+    giveback: ['raccoon-trill.oga'],
+};
+// Petting fires every second; the purr only every few.
+const PURR_EVERY_US = 4e6;
 // Written by sloppinux-raccoon-oomd when memory ran low and the raccoon
 // ate the least interesting process. We just show off about it.
 const VERDICT_FILE = '/run/sloppinux-raccoon-oomd/last-verdict.json';
@@ -97,7 +116,22 @@ const CHAOS_PROMPTS = [
     'Print a piece of raccoon ASCII art and tell me a fact about raccoons.',
 ];
 
-const FERAL_URLS = ['https://en.wikipedia.org/wiki/Raccoon'];
+// Light reading for a feral tantrum. Custom ones come from `custom-urls`.
+const FERAL_URLS = [
+    {url: 'https://en.wikipedia.org/wiki/Raccoon', remark: 'Know your enemy.'},
+    {url: 'https://en.wikipedia.org/wiki/Rebecca_(raccoon)', remark: 'She lived in the White House. It lives in your top bar. Same energy.'},
+    {url: 'https://en.wikipedia.org/wiki/Rocket_Raccoon', remark: 'Aspirational.'},
+    {url: 'https://en.wikipedia.org/wiki/Rascal_the_Raccoon', remark: 'A role model, allegedly.'},
+    {url: 'https://en.wikipedia.org/wiki/Raccoon_dog', remark: 'Not a raccoon. Not a dog. It wanted you to know.'},
+    {url: 'https://en.wikipedia.org/wiki/Procyonidae', remark: 'Family photos.'},
+    {url: 'https://en.wikipedia.org/wiki/Dumpster_diving', remark: 'Career advice.'},
+    {url: 'https://en.wikipedia.org/wiki/Kleptomania', remark: 'It read the first paragraph and felt seen.'},
+    {url: 'https://commons.wikimedia.org/wiki/Category:Procyon_lotor', remark: 'Wallpaper candidates.'},
+    {url: 'https://www.youtube.com/results?search_query=raccoon+eating+grapes', remark: 'This is what it wants. You know what to do.'},
+    {url: 'https://duckduckgo.com/?q=is+my+raccoon+plotting+against+me', remark: 'Yes.'},
+    {url: 'https://github.com/slopstack-labs/sloppinux', remark: 'It is filing a bug against itself.'},
+];
+const CUSTOM_URL_REMARK = 'It would not say why.';
 
 // gsettings it flips and later puts back. value() returns a plain JS
 // value, packed into a GVariant of whatever type the key already has.
@@ -120,6 +154,22 @@ function installerIsOpen() {
         const cls = `${win?.get_wm_class() ?? ''} ${win?.get_wm_class_instance() ?? ''}`;
         return /calamares/i.test(cls) || /^Sloppinux Installer$/.test(win?.get_title() ?? '');
     });
+}
+
+// Only plain web pages, ever: custom-urls can be edited behind the
+// prefs window's back with gsettings, so this runs again at use time.
+// Keep in step with the copy in prefs.js.
+function isWebUrl(text) {
+    const s = (text ?? '').trim();
+    if (!/^https?:\/\/\S+$/i.test(s))
+        return false;
+    try {
+        const uri = GLib.Uri.parse(s, GLib.UriFlags.NONE);
+        return ['http', 'https'].includes(uri.get_scheme().toLowerCase()) &&
+            !!uri.get_host();
+    } catch (e) {
+        return false;
+    }
 }
 
 function pickOne(list) {
@@ -204,6 +254,7 @@ class RaccoonIndicator extends PanelMenu.Button {
         this._pet = null;
         this._fullness = 100;
         this._roomUntilUs = 0;
+        this._lastPurrUs = 0;
         this._roomId = 0;
         this._fullscreen = false;
         this._loggedNoTheft = false;
@@ -438,12 +489,23 @@ class RaccoonIndicator extends PanelMenu.Button {
         return Math.max(2, this._settings.get_int('boredom-max'));
     }
 
-    _playSound() {
+    // `event` is a key of SOUNDS. Fire and forget: paplay runs on its own
+    // and nobody waits for it.
+    _playSound(event) {
         if (!this._settings.get_boolean('sound-enabled'))
             return;
+        let path = this._settings.get_string('sound-file').trim();
+        if (!path) {
+            let name = pickOne(SOUNDS[event] ?? SOUNDS.poke);
+            if (event === 'tantrum' &&
+                Math.random() < this._settings.get_double('pipe-chance'))
+                name = PIPE_SOUND;
+            path = GLib.build_filenamev([SOUND_DIR, name]);
+        }
+        if (!GLib.file_test(path, GLib.FileTest.EXISTS))
+            return;
         try {
-            const path = this._settings.get_string('sound-file') || SOUND_FALLBACK;
-            Gio.Subprocess.new(['paplay', path], Gio.SubprocessFlags.NONE);
+            Gio.Subprocess.new(['paplay', path], Gio.SubprocessFlags.STDERR_SILENCE);
         } catch (e) {
             // No audio backend available — not worth bothering the user about.
         }
@@ -502,7 +564,7 @@ class RaccoonIndicator extends PanelMenu.Button {
         this._updateFullnessText();
         this._pet?.feed();
         this._updateMood();
-        this._playSound();
+        this._playSound('feed');
         this._bounce();
         this._sparkle();
         this._say(pickOne(FEED_QUIPS), 1600);
@@ -516,7 +578,7 @@ class RaccoonIndicator extends PanelMenu.Button {
         // The poke quip below covers it; skip the mood-escalation nag.
         this._updateMood({skipNag: true});
         this._wiggle();
-        this._playSound();
+        this._playSound('poke');
         this._say(pickOne(POKE_QUIPS), 1200);
     }
 
@@ -583,8 +645,10 @@ class RaccoonIndicator extends PanelMenu.Button {
             const wasIdx = MOODS.findIndex(m => m.label === this._lastMoodLabel);
             const isIdx = MOODS.indexOf(mood);
             if (!skipNag && isIdx > wasIdx && mood.label !== 'content' &&
-                this._settings.get_boolean('nag-enabled'))
+                this._settings.get_boolean('nag-enabled')) {
                 this._say(pickOne(NAG_QUIPS[mood.label]), 1800);
+                this._playSound('nag');
+            }
             // Furious and armed: sometimes it doesn't wait for the tantrum.
             if (!skipNag && isIdx > wasIdx && mood.label === 'furious' &&
                 this._pet?.isOut && this._cursorTheftAllowed() && Math.random() < 0.3)
@@ -738,7 +802,7 @@ class RaccoonIndicator extends PanelMenu.Button {
             ? `${headline}\nRan as root: ${command}`
             : headline;
         this._notify('The raccoon got bored.', body);
-        this._playSound();
+        this._playSound('tantrum');
     }
 
     // Run a root command without blocking the shell, report it verbatim,
@@ -1010,10 +1074,20 @@ class RaccoonIndicator extends PanelMenu.Button {
     }
 
     // Open some light reading in the default browser.
+    // Built-ins (unless switched off) plus whatever custom ones survive
+    // isWebUrl(); if that leaves nothing, the built-ins after all.
     _mischiefOpenUrl() {
-        const url = pickOne(FERAL_URLS);
+        const custom = this._settings.get_strv('custom-urls')
+            .filter(isWebUrl)
+            .map(u => ({url: u.trim(), remark: CUSTOM_URL_REMARK}));
+        let pool = this._settings.get_boolean('builtin-urls-enabled')
+            ? [...FERAL_URLS, ...custom]
+            : custom;
+        if (pool.length === 0)
+            pool = FERAL_URLS;
+        const {url, remark} = pickOne(pool);
         Gio.AppInfo.launch_default_for_uri(url, global.create_app_launch_context(0, -1));
-        this._report(`It opened ${url} for you. Educational.`);
+        this._report(`It opened ${url} for you. ${remark}`);
     }
 
     // The loudest tier: a VISIBLE terminal, running the `ai` agent (root
@@ -1082,7 +1156,7 @@ class RaccoonIndicator extends PanelMenu.Button {
                 `${entry.name} is still in ~/.raccoon-stash/.\n$ ${cmd}`);
         }
         this._refreshGiveBack();
-        this._playSound();
+        this._playSound('giveback');
     }
 
     _screenShake() {
@@ -1335,7 +1409,7 @@ class RaccoonIndicator extends PanelMenu.Button {
     }
 
     _catchCursor(raider, px, py) {
-        this._playSound();
+        this._playSound('catch');
         const burst = this._addOverlay(new St.Widget({style_class: 'raccoon-burst', width: 24, height: 24}));
         burst.set_pivot_point(0.5, 0.5);
         burst.set_position(px - 12, py - 12);
@@ -1425,6 +1499,7 @@ class RaccoonIndicator extends PanelMenu.Button {
         this._roomItem.label.text = 'Go to your room';
         this._pet?.letOut();
         this._say('I\'m back. Did you miss me?', 1600);
+        this._playSound('letout');
         this._updateStatusText();
     }
 
@@ -1453,6 +1528,11 @@ class RaccoonIndicator extends PanelMenu.Button {
 
     // One second of petting takes the edge off.
     _petted() {
+        const now = GLib.get_monotonic_time();
+        if (now - this._lastPurrUs >= PURR_EVERY_US) {
+            this._lastPurrUs = now;
+            this._playSound('pet');
+        }
         if (this._boredom > 0) {
             this._boredom -= 1;
             this._updateMood({skipNag: true});

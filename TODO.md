@@ -46,6 +46,15 @@ here was not.
   - disabling the extension in the middle of a drag.
   The pet's hit box is the full 96px square, so clicks on the transparent
   corners are eaten.
+- **How the raccoon sounds.** The voice (`raccoon-*.oga`) is synthesised by
+  `scripts/gen-raccoon-sounds.py` and has only ever been looked at as
+  spectrograms: nobody has listened to it. In a GNOME 48 VM the files play
+  through `paplay` and the right clip fires for poke, feed, petting and a
+  throw; the Settings window (reset with its confirmation, adding and
+  listing web pages, flagging a non-web entry) works on libadwaita 1.7.
+  Still to do by ear and by hand: judge each clip and retune the generator,
+  hear a tantrum (growl, hiss, or the pipe at `pipe-chance`) and the trill
+  on nags, and let it open each built-in page in a browser once.
 
 ## Decisions for a human
 
