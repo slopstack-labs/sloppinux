@@ -29,11 +29,14 @@ here was not.
   live GNOME 48 session (Wayland, software rendering, 100% scale): the
   sprite animations, roaming, pick up / dangle, throw / tumble / sulk,
   petting with hearts, feeding with the fullness meter, "Go to your room"
-  and "Let it out", the Settings window, and cursor theft starting (it ran
-  to the pointer and the notification fired). Not confirmed:
-  - cursor theft really dragging the pointer along, and the shake-it-off
-    threshold (`SHAKE_OFF_PX` in `pet.js`) being neither trivial nor
-    impossible. A VM screendump has no cursor in it; try it by hand;
+  and "Let it out", the Settings window, and cursor theft: the pointer
+  follows the raccoon, the real cursor is hidden while it is carried, and a
+  couple of seconds of wiggling shakes it off. Not confirmed:
+  - cursor theft in GNOME Boxes / SPICE and on real hardware. It was tested
+    in plain QEMU with software cursors. With an absolute pointer the host
+    draws the cursor, so the trick there rests entirely on the guest hiding
+    it (`set_pointer_visible(false)`, reapplied every tick); if the host
+    cursor stays visible, nothing looks stolen;
   - HiDPI and fractional scaling (the pet's size is fixed when it is
     created, and the sheet is scaled by St, so expect soft pixels at 200%);
   - hiding while a window is fullscreen (`in-fullscreen-changed`);

@@ -12,6 +12,7 @@ import St from 'gi://St';
 import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
 import Gio from 'gi://Gio';
+import Meta from 'gi://Meta';
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
@@ -31,6 +32,7 @@ const FRICTION = 2.2;       // 1/s, exponential decay of a thrown raccoon
 const BOUNCE = 0.6;
 const FX_POOL = 4;
 const SHAKE_OFF_PX = 700;   // accumulated tug-of-war before it lets go
+const TUG_PER_TICK = 45;    // most one tick may add to that, see _tickTheft
 
 // name -> {frames, fps, loop, next}. `next` is played when a non-looping
 // animation ends.
@@ -236,15 +238,62 @@ export class RaccoonPet {
 
     stopCursorTheft() {
         if (this._theft) {
-            this._theft = null;
+            this._endTheft();
             this._setState('idle', 2e6);
+        }
+    }
+
+    // The single way a theft ends: drop it and give the cursor back.
+    _endTheft() {
+        this._theft = null;
+        this._showCursor();
+    }
+
+    // While the raccoon carries the cursor the real one is hidden: the
+    // arrow in its mouth (the carry frames) IS the cursor. Without this
+    // there are two arrows on real hardware, and in a VM with an absolute
+    // pointer (GNOME Boxes, anything SPICE or with a tablet device) the
+    // host keeps drawing the cursor under your hand no matter where the
+    // guest warps it, so nothing appears to be stolen at all.
+    _hideCursor() {
+        try {
+            this._tracker ??= global.backend.get_cursor_tracker?.() ??
+                Meta.CursorTracker.get_for_display(global.display);
+            if (this._tracker.inhibit_cursor_visibility) {
+                if (!this._cursorHidden)
+                    this._tracker.inhibit_cursor_visibility();
+            } else {
+                // Not sticky: Mutter shows the pointer again when another
+                // device moves it, so this is reapplied every tick.
+                this._tracker.set_pointer_visible(false);
+            }
+            this._cursorHidden = true;
+        } catch (e) {
+            if (!this._loggedNoHide) {
+                this._loggedNoHide = true;
+                logError(e, 'raccoon-pet: cannot hide the cursor, stealing it visibly');
+            }
+        }
+    }
+
+    _showCursor() {
+        if (!this._cursorHidden)
+            return;
+        this._cursorHidden = false;
+        try {
+            if (this._tracker.uninhibit_cursor_visibility)
+                this._tracker.uninhibit_cursor_visibility();
+            else
+                this._tracker.set_pointer_visible(true);
+        } catch (e) {
+            logError(e, 'raccoon-pet: cannot show the cursor again');
         }
     }
 
     // "Go to your room": walk to the panel icon and vanish.
     goHome() {
         this._dropGrab();
-        this._theft = null;
+        this._endTheft();
         if (!this.isOut) {
             this._away = true;
             this.actor.hide();
@@ -276,7 +325,7 @@ export class RaccoonPet {
         this._suspended = on;
         if (on) {
             this._dropGrab();
-            this._theft = null;
+            this._endTheft();
             this.actor.hide();
             this._clearFx();
             this._stopTimer();
@@ -299,7 +348,7 @@ export class RaccoonPet {
         this._destroyed = true;
         this._dropGrab();
         this._stopTimer();
-        this._theft = null;
+        this._endTheft();
         for (const fx of this._fx)
             fx.actor.destroy();
         this._fx = [];
@@ -800,10 +849,16 @@ export class RaccoonPet {
             return;
         }
 
+        this._hideCursor();
         if (th.put) {
+            // How far the human dragged the pointer from where we put it.
+            // Capped per tick: an absolute device (a VM's tablet) jumps the
+            // whole way back in one event, which would otherwise count as
+            // an instant win. This way it takes about half a second of
+            // actual wiggling on any kind of mouse.
             const dev = Math.hypot(px - th.put[0], py - th.put[1]);
             if (dev > 3 * this._scale)
-                th.tug += dev;
+                th.tug += Math.min(dev, TUG_PER_TICK * this._scale);
             else
                 th.tug = Math.max(0, th.tug - 2);
             if (th.tug > SHAKE_OFF_PX * this._scale) {
@@ -812,7 +867,7 @@ export class RaccoonPet {
             }
         }
         if (t > th.deadline) {
-            this._theft = null;
+            this._endTheft();
             this._setState('idle', 2e6);
             this._say('Okay, you can have it back.', 1400);
             return;
@@ -840,7 +895,7 @@ export class RaccoonPet {
     }
 
     _shakenOff() {
-        this._theft = null;
+        this._endTheft();
         this._vx = -this._dir * rand(500, 800) * this._scale;
         this._vy = rand(-300, 300) * this._scale;
         this._spin = -this._dir * 900;
