@@ -4,8 +4,26 @@
 set -euo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-echo "==> Installing ollama"
-curl -fsSL https://ollama.com/install.sh | sh
+# Skipped when ollama is already in the chroot, so `build.sh --refresh` can
+# rerun this hook without downloading the whole thing again.
+if command -v ollama >/dev/null 2>&1; then
+    echo "==> ollama already installed, not reinstalling"
+else
+    echo "==> Installing ollama"
+    curl -fsSL https://ollama.com/install.sh | sh
+fi
+
+# When the build host has an NVIDIA GPU, the install script also sets up
+# CUDA drivers, and to reach them it "enables contrib" by copying
+# sources.list with s/main/contrib/. Ours already carries contrib, so the
+# copy is every line again with a doubled "contrib contrib" area, and every
+# apt run on the shipped system prints a wall of "configured multiple
+# times" warnings. Drop the copy when it adds nothing.
+CONTRIB_LIST=/etc/apt/sources.list.d/contrib.list
+if [ -f "$CONTRIB_LIST" ] && grep -Eq '^deb .*[[:space:]]contrib([[:space:]]|$)' /etc/apt/sources.list; then
+    echo "==> Removing redundant $CONTRIB_LIST left by the ollama installer"
+    rm -f "$CONTRIB_LIST"
+fi
 
 # Enable the ollama systemd service so it starts on boot
 systemctl enable ollama

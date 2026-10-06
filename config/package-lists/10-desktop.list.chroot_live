@@ -16,6 +16,9 @@ plymouth
 plymouth-themes
 librsvg2-bin
 zsh
+# The agnoster prompt in /etc/skel/.zshrc is drawn with powerline glyphs;
+# without this font every prompt segment ends in a tofu box.
+fonts-powerline
 fastfetch
 gnome-shell-extension-dashtodock
 gnome-shell-extension-system-monitor
@@ -32,3 +35,20 @@ grub-efi-amd64-signed
 grub-common
 shim-signed
 efibootmgr
+# Named here (not just pulled in as dependencies) so they are marked
+# manual and survive the installer's `apt-get autoremove`: grub2-common
+# carries update-grub and grub-install, os-prober finds the neighbours.
+grub2-common
+os-prober
+# Encrypted installs. Debian's bootloader helper tries to apt-get these
+# into the target from an apt pool our medium does not have, so they ship
+# in the image instead. Without cryptsetup-initramfs a LUKS root never opens.
+cryptsetup
+cryptsetup-initramfs
+keyutils
+# hwclock moved here in trixie; Calamares' hwclock step exits 127 without it.
+util-linux-extra
+# VM manners: guest agent for scripted testing (virsh qemu-agent-command),
+# vdagent for clipboard and display resize in GNOME Boxes / virt-manager.
+qemu-guest-agent
+spice-vdagent

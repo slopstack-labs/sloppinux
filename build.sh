@@ -39,6 +39,15 @@ Builds the Sloppinux ${SLOPPINUX_VERSION} live ISO (${ISO_NAME}) with live-build
 Options:
   --quick          Reuse the cached chroot and only rebuild the ISO image.
                    Hooks don't rerun, so --model/--no-model have no effect.
+  --refresh        Reuse the cached chroot, but bring it up to date first:
+                   copy changed files from config/includes.chroot, install
+                   packages added to config/package-lists, and rerun the
+                   hooks that changed since the chroot was built. Minutes instead of a full
+                   build. Removed packages/files and hooks that can't run
+                   twice (0012, 0020, 0050) still need a full build.
+  --rerun-hooks L  Like --refresh, but you pick the hooks to rerun: a
+                   comma-separated list of name prefixes, e.g. 0022,0040.
+                   Needed once for a chroot built before --refresh existed.
   --model NAME     Bake ollama model NAME into the image
                    (default: \$SLOPPINUX_BAKE_MODEL, else ${DEFAULT_BAKE_MODEL}).
   --no-model       Don't bake any model (smaller ISO; ollama needs a network
@@ -55,10 +64,47 @@ EOF
 }
 
 QUICK=0
+REFRESH=0
+RERUN_HOOKS=""
+# Hooks that only work on a fresh chroot. 0012 and 0050 compile C, and
+# after 0060 has run `gcc` is the joke compiler; 0020 appends to
+# /etc/bash.bashrc and would do it twice.
+NOT_RERUNNABLE=(0012-sloppinux-exec 0020-branding 0050-pam-vibe)
+# sha256 of every hook as of the last time it ran in ./chroot. Lives in
+# live-build's .build/, so `lb clean` forgets it together with the chroot.
+HOOK_SUMS=".build/sloppinux-hooks.sha256"
+# Same idea for config/includes.chroot: what each file looked like when it
+# was last copied into ./chroot.
+INCLUDE_SUMS=".build/sloppinux-includes.sha256"
+# Includes that a hook reads or edits after they are copied in. When one of
+# these changes, a refresh has to rerun that hook as well.
+# Format: "path prefix under config/includes.chroot/:hook name prefix".
+INCLUDE_HOOK_DEPS=(
+    "etc/calamares/:0040-calamares"
+    "etc/skel/.zshrc:0022-zsh"
+    "usr/share/gnome-shell/extensions/raccoon@sloppinux.local/schemas/:0018-raccoon-schemas"
+    "usr/src/sloppinux/:0050-pam-vibe"
+)
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --quick)
             QUICK=1
+            ;;
+        --refresh)
+            REFRESH=1
+            ;;
+        --rerun-hooks)
+            if [[ $# -lt 2 || -z "$2" || "$2" == -* ]]; then
+                echo "Error: --rerun-hooks needs a list (e.g. --rerun-hooks 0022,0040)" >&2
+                exit 2
+            fi
+            REFRESH=1
+            RERUN_HOOKS="$2"
+            shift
+            ;;
+        --rerun-hooks=*)
+            REFRESH=1
+            RERUN_HOOKS="${1#--rerun-hooks=}"
             ;;
         --model)
             if [[ $# -lt 2 || -z "$2" || "$2" == -* ]]; then
@@ -98,6 +144,81 @@ if [[ -n "$SLOPPINUX_BAKE_MODEL" && ! "$SLOPPINUX_BAKE_MODEL" =~ ^[A-Za-z0-9._:/
     exit 2
 fi
 
+# Our own hooks, in run order. live-build drops symlinks to its stock hooks
+# into the same directory; those are not ours to track or rerun.
+own_hooks() {
+    local h
+    for h in config/hooks/normal/*.hook.chroot; do
+        [[ -f "$h" && ! -L "$h" ]] && echo "$h"
+    done
+    return 0
+}
+
+# --refresh: work out which hooks to rerun before touching anything.
+HOOKS_TO_RERUN=()
+if [[ $REFRESH -eq 1 ]]; then
+    QUICK=1
+    if [[ ! -d chroot || ! -f .build/chroot_hooks ]]; then
+        echo "Error: --refresh needs a finished chroot from an earlier full build" >&2
+        exit 1
+    fi
+    if [[ -n "$RERUN_HOOKS" ]]; then
+        IFS=',' read -ra wanted <<< "$RERUN_HOOKS"
+        for want in "${wanted[@]}"; do
+            match=""
+            while IFS= read -r h; do
+                [[ "$(basename "$h")" == "$want"* ]] && match="$h" && break
+            done < <(own_hooks)
+            if [[ -z "$match" ]]; then
+                echo "Error: --rerun-hooks: no hook in config/hooks/normal starts with '$want'" >&2
+                exit 2
+            fi
+            HOOKS_TO_RERUN+=("$match")
+        done
+    elif [[ -f "$HOOK_SUMS" ]]; then
+        while IFS= read -r h; do
+            grep -qxF "$(sha256sum "$h")" "$HOOK_SUMS" || HOOKS_TO_RERUN+=("$h")
+        done < <(own_hooks)
+    else
+        echo "Error: this chroot was built before --refresh existed, so there is no" >&2
+        echo "record of which hooks it has seen. Name them once, e.g.:" >&2
+        echo "    $0 --rerun-hooks 0022,0040" >&2
+        exit 1
+    fi
+    # Includes that changed since they were last copied in (all of them when
+    # there is no record), and the hooks that have to follow them.
+    CHANGED_INCLUDES=()
+    while IFS= read -r -d '' inc; do
+        if [[ -f "$inc" && ! -L "$inc" && -f "$INCLUDE_SUMS" ]] \
+           && grep -qxF "$(sha256sum "$inc")" "$INCLUDE_SUMS"; then
+            continue
+        fi
+        CHANGED_INCLUDES+=("$inc")
+    done < <(find config/includes.chroot \( -type f -o -type l \) -print0 | sort -z)
+    for inc in "${CHANGED_INCLUDES[@]}"; do
+        rel="${inc#config/includes.chroot/}"
+        for dep in "${INCLUDE_HOOK_DEPS[@]}"; do
+            if [[ "$rel" == "${dep%%:*}"* ]]; then
+                while IFS= read -r h; do
+                    [[ "$(basename "$h")" == "${dep#*:}"* ]] && HOOKS_TO_RERUN+=("$h")
+                done < <(own_hooks)
+            fi
+        done
+    done
+    # Run order is name order, whatever order they were asked for in.
+    if [[ ${#HOOKS_TO_RERUN[@]} -gt 0 ]]; then
+        mapfile -t HOOKS_TO_RERUN < <(printf '%s\n' "${HOOKS_TO_RERUN[@]}" | sort -u)
+    fi
+    for h in "${HOOKS_TO_RERUN[@]}"; do
+        for bad in "${NOT_RERUNNABLE[@]}"; do
+            if [[ "$(basename "$h")" == "$bad"* ]]; then
+                echo "Error: $(basename "$h") only works on a fresh chroot; this change needs a full build" >&2
+                exit 1
+            fi
+        done
+    done
+fi
+
 if [[ $EUID -ne 0 ]]; then
     echo "Error: run as root (sudo ./build.sh)" >&2
     exit 1
@@ -116,7 +237,12 @@ APT_PROXY="${APT_PROXY-http://localhost:3142}"
 echo "==> Sloppinux build settings"
 echo "    version:   ${SLOPPINUX_VERSION}"
 echo "    dist:      ${DIST} (${ARCH})"
-echo "    mode:      $([[ $QUICK -eq 1 ]] && echo "quick (reusing chroot cache)" || echo full)"
+if [[ $REFRESH -eq 1 ]]; then
+    echo "    mode:      refresh (reusing chroot: ${#CHANGED_INCLUDES[@]} changed include(s), rerunning ${#HOOKS_TO_RERUN[@]} hook(s))"
+    for h in "${HOOKS_TO_RERUN[@]}"; do echo "               - $(basename "$h")"; done
+else
+    echo "    mode:      $([[ $QUICK -eq 1 ]] && echo "quick (reusing chroot cache)" || echo full)"
+fi
 echo "    model:     ${SLOPPINUX_BAKE_MODEL:-none (not baking a model)}"
 echo "    apt proxy: ${APT_PROXY:-none (direct to mirror)}"
 echo "    output:    ${ISO_NAME}"
@@ -208,15 +334,39 @@ lb chroot_preseed
 lb chroot_includes_before_packages
 chroot chroot dpkg-divert --local --rename --add /usr/sbin/aspell-autobuildhash
 chroot chroot ln -sf /bin/true /usr/sbin/aspell-autobuildhash
+if [[ $REFRESH -eq 1 ]]; then
+    # Forget that these stages ran, so live-build does them again: apt
+    # installs whatever the package lists gained (and no-ops on the rest),
+    # and the includes are copied over the chroot once more.
+    rm -f .build/chroot_package-lists.install .build/chroot_package-lists.live \
+          .build/chroot_install-packages.install .build/chroot_install-packages.live
+fi
 for PASS in install live; do
     lb chroot_package-lists "$PASS"
     lb chroot_install-packages "$PASS"
     # lb binary_manifest expects these package-state snapshots — normally
     # written by live-build's own "lb chroot" orchestrator, which we're
-    # replicating manually here.
-    [[ "$PASS" == install ]] && chroot chroot dpkg-query -W > chroot.packages.install
+    # replicating manually here. On a refresh the chroot already holds the
+    # live pass too, so the snapshot from the full build stays.
+    if [[ "$PASS" == install && ( $REFRESH -eq 0 || ! -f chroot.packages.install ) ]]; then
+        chroot chroot dpkg-query -W > chroot.packages.install
+    fi
 done
 lb chroot_includes_after_packages
+if [[ $REFRESH -eq 1 ]]; then
+    # Copy over only the includes that changed since they last went in.
+    # Copying all of them again would also reset the ones a hook edits
+    # after the copy (0040 stamps the version into branding.desc).
+    if [[ ! -f "$INCLUDE_SUMS" ]]; then
+        echo "Warning: no record of the includes in this chroot; copying all of them." >&2
+    fi
+    for inc in "${CHANGED_INCLUDES[@]}"; do
+        rel="${inc#config/includes.chroot/}"
+        echo "==> Refreshing include /$rel"
+        mkdir -p "chroot/$(dirname "$rel")"
+        cp -a --remove-destination "$inc" "chroot/$rel"
+    done
+fi
 # live-build runs chroot hooks under `env -i`, so build-time knobs go in
 # via a file. Hooks source it with
 #   [ -f /etc/sloppinux-build.env ] && . /etc/sloppinux-build.env
@@ -227,6 +377,25 @@ SLOPPINUX_DEBIAN_VERSION=$(cat chroot/etc/debian_version)
 SLOPPINUX_BAKE_MODEL=${SLOPPINUX_BAKE_MODEL}
 EOF
 lb chroot_hooks
+# On a refresh the line above is a no-op (live-build has the stage on
+# record), so run the changed hooks ourselves, the way live-build would:
+# copied into the chroot, executed there with a scrubbed environment.
+for h in "${HOOKS_TO_RERUN[@]}"; do
+    name="$(basename "$h")"
+    echo "==> Rerunning hook $name"
+    mkdir -p chroot/root/lb_chroot_hooks
+    install -m 0755 "$h" "chroot/root/lb_chroot_hooks/$name"
+    chroot chroot /usr/bin/env -i HOME=/root \
+        PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+        TERM="${TERM:-dumb}" DEBIAN_FRONTEND=noninteractive DEBIAN_PRIORITY=critical \
+        DEBCONF_NONINTERACTIVE_SEEN=true DEBCONF_NOWARNINGS=true \
+        "/root/lb_chroot_hooks/$name"
+    rm -f "chroot/root/lb_chroot_hooks/$name"
+done
+rmdir chroot/root/lb_chroot_hooks 2>/dev/null || true
+# Every hook has now run in this chroot in its current form.
+own_hooks | xargs -r sha256sum > "$HOOK_SUMS"
+find config/includes.chroot -type f -print0 | sort -z | xargs -0 -r sha256sum > "$INCLUDE_SUMS"
 rm -f chroot/etc/sloppinux-build.env
 lb chroot_hacks
 lb chroot_interactive

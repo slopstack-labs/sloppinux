@@ -4,14 +4,29 @@ set -euo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 echo "==> Installing Oh My Zsh"
-git clone --depth=1 https://github.com/ohmyzsh/ohmyzsh.git /usr/share/oh-my-zsh
+# Skipped when already there, so `build.sh --refresh` can rerun this hook.
+if [ ! -d /usr/share/oh-my-zsh/.git ]; then
+    rm -rf /usr/share/oh-my-zsh
+    git clone --depth=1 https://github.com/ohmyzsh/ohmyzsh.git /usr/share/oh-my-zsh
+fi
 
 echo "==> Setting zsh as system default shell"
 # adduser reads DSHELL from adduser.conf — live-config uses adduser to create
 # the live user, so this is the reliable way to make zsh the default.
-sed -i 's|^DSHELL=.*|DSHELL=/bin/zsh|' /etc/adduser.conf
+# trixie ships the key commented out ("#DSHELL=/bin/bash"), so a plain
+# s/^DSHELL=// matches nothing and everyone quietly gets bash: handle the
+# commented and the missing case too, then prove it stuck.
+set_key() { # set_key FILE KEY VALUE
+    if grep -Eq "^#?[[:space:]]*$2=" "$1"; then
+        sed -i -E "0,/^#?[[:space:]]*$2=.*/s||$2=$3|" "$1"
+    else
+        printf '%s=%s\n' "$2" "$3" >> "$1"
+    fi
+    grep -qx "$2=$3" "$1" || { echo "0022-zsh: could not set $2 in $1" >&2; exit 1; }
+}
+set_key /etc/adduser.conf DSHELL /bin/zsh
 # Fallback: useradd default for any other tooling
-sed -i 's|^SHELL=.*|SHELL=/bin/zsh|' /etc/default/useradd
+set_key /etc/default/useradd SHELL /bin/zsh
 
 # Set zsh for root
 chsh -s /bin/zsh root

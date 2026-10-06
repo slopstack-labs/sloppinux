@@ -63,6 +63,8 @@ sloppinux-1.0-trixie-amd64.iso.sha256
 | Flag | Effect |
 |------|--------|
 | `--quick` | Reuse the cached chroot, only rebuild the ISO image. Hooks don't rerun, so the previously baked model stays |
+| `--refresh` | Reuse the cached chroot but bring it up to date first: copy the changed files from `config/includes.chroot`, install packages added to the lists, rerun the hooks whose content changed since the chroot was built, then rebuild the image. Minutes instead of a full build |
+| `--rerun-hooks LIST` | Like `--refresh`, but rerun exactly the named hooks (comma-separated name prefixes, e.g. `0022,0040`). Needed once for a chroot built before `--refresh` existed |
 | `--model NAME` | Bake ollama model `NAME` instead of the default `qwen2.5-coder:1.5b` (also `SLOPPINUX_BAKE_MODEL=…`) |
 | `--no-model` | Bake nothing — about 1 GB smaller, but `ai` is idle until a model is pulled |
 | `--help` | Full list, including the `APT_PROXY` and `SLOPPILER_SRC` environment knobs |
@@ -138,11 +140,11 @@ A notification greets each new user once: which model is loaded, that unknown co
 
 ### The raccoon
 
-Click it for its mood and a countdown to its next tantrum. Feed it from the menu or by dragging a file from Files onto it. Left alone for about five minutes it throws a tantrum: it drags your real cursor around, mashes gibberish into whatever window has focus, hides one of your files in `~/.raccoon-stash/`, renames the host, repaints the accent colour or leaves a note on the Desktop. Every tantrum shows up as a notification and in the menu, including the exact root command it ran. Stolen files stay stolen until you pick "Give it back" from the menu. The standalone, housebroken version lives at [slopstack-labs/raccy](https://github.com/slopstack-labs/raccy), with an opt-in feral mode.
+Click it for its mood and a countdown to its next tantrum. Feed it from the menu or by dragging a file from Files onto it; it sparkles and says thanks. Poke it from the menu or with a middle click and it gets grumpier faster. As it gets bored it nags you in speech bubbles. Left alone for about five minutes it throws a tantrum: it spins, shakes the screen, flashes a colour, waddles across the bottom of the screen or chases your cursor, sometimes types gibberish into a speech bubble, and then does one real thing (feral mode, on by default): drags your real cursor around, mashes gibberish into whatever window has focus, hides one of your files in `~/.raccoon-stash/`, renames the host, flips a GNOME setting (accent colour, text size, night light, cursor size; put back after 20 seconds), leaves a note on the Desktop, opens a web page, or pops a terminal running `ai`. Every tantrum shows up as a notification and in the menu, including the exact root command it ran. Stolen files stay stolen until you pick "Give it back" from the menu. The one thing it sits still for is the installer: while Calamares is open it supervises and its boredom is paused. Whatever root touches in your home is chowned back to you, so you can clean up without sudo. Everything is tunable, or disarmable, in Extensions → Sloppy Raccoon → Settings. The standalone, housebroken version lives at [slopstack-labs/raccy](https://github.com/slopstack-labs/raccy), with an opt-in feral mode.
 
 ### Installing to disk
 
-Calamares starts automatically in the live session, and only there (`sloppinux-installer-autostart` checks for live media and runs the installer as root). The installed system keeps everything — ollama, the baked model, the raccoon, the welcome — but a target-side fixup drops the live-only bits: the installer itself and its autostart, the live user's passwordless sudo, and the live autologin. On BIOS machines the fixup swaps `grub-efi` for `grub-pc`; `grub-pc-bin` ships in the image so that works without a network.
+Calamares starts automatically in the live session, and only there (`sloppinux-installer-autostart` checks for live media and runs the installer as root). The installed system keeps everything — ollama, the baked model, the raccoon, the welcome — but a target-side fixup drops the live-only bits: the installer itself and its autostart, the live user's passwordless sudo, and the live autologin. On BIOS machines the fixup swaps `grub-efi` for `grub-pc`, from a `.deb` stashed in the image at build time, so that works without a network. The human you create gets zsh with Oh My Zsh, same as the live user.
 
 ## Inference-layer extensions
 
@@ -239,6 +241,7 @@ config/
     0030-sloppy-toppy.hook.chroot               # sloppy-toppy from pinned GitHub release
     0031-sloppiler.hook.chroot                  # sloppiler from pinned GitHub release (or local override)
     0017-enable-raccoon-oomd.hook.chroot        # enables the raccoon OOM court
+    0018-raccoon-schemas.hook.chroot            # compiles the raccoon's GSettings schema
     0033-slop-git.hook.chroot                   # slop-git into /opt/slop-git from a pinned commit
     0034-enable-survey.hook.chroot              # enables the post-install survey
     0040-calamares.hook.chroot                  # installer branding, BIOS/EFI GRUB swap, target cleanup
@@ -282,6 +285,8 @@ Build-time knobs reach the hooks through `/etc/sloppinux-build.env`, which `buil
 **Add a package:** drop a `*.list.chroot_live` file in `config/package-lists/` with one package name per line.
 
 **Add a tool:** drop a `NNNN-name.hook.chroot` in `config/hooks/normal/`. Runs inside the chroot after package installation, with internet access. Source `/etc/sloppinux-build.env` if you need the version or model name.
+
+A hook that can safely run twice in the same chroot (guard downloads and appends) can be picked up by `--refresh`; the ones that cannot are listed in `NOT_RERUNNABLE` in `build.sh`.
 
 **Add a binary:** place it in `config/includes.chroot/usr/local/bin/` (the permissions hook makes it executable). For something with GitHub releases, copy the sloppiler hook: pin the tag, pin the sha256 from the release API, download with retries, verify, install.
 

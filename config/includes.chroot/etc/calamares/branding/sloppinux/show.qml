@@ -41,6 +41,9 @@ Presentation {
         }
     }
 
-    onActivate:  {}
-    onLeave:     {}
+    // Plain functions, not signal handlers: Presentation has no such
+    // signals, and with "onLeave: {}" the whole file fails to load and the
+    // install page shows an empty white box instead.
+    function onActivate() {}
+    function onLeave() {}
 }

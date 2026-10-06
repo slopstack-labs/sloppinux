@@ -95,6 +95,15 @@ Keywords=calamares;install;installer;sloppinux;
 StartupWMClass=calamares
 EOF
 
+# A chroot built by an older version of this hook (reused via
+# `build.sh --refresh`) still has such a stray file at the diverted path.
+# While the diversion is active dpkg's own copy lives at .orig, so whatever
+# sits at the diverted path is not dpkg's: drop it here, at build time.
+DIVERTED=/usr/share/applications/calamares.desktop
+if [[ -f "$DIVERTED" && "$(dpkg-divert --truename "$DIVERTED")" != "$DIVERTED" ]]; then
+    rm -f "$DIVERTED"
+fi
+
 # Exactly one installer tile in the app grid: ours. Hide the two stock
 # launchers (calamares.desktop from the calamares package, and
 # calamares-install-debian.desktop from calamares-settings-debian) with
@@ -132,6 +141,24 @@ operations:
       - 'calamares-settings-debian'
 EOF
 
+# The human Calamares creates gets zsh, like the live user (see 0022-zsh).
+# Calamares defaults to /bin/bash and passes it to useradd explicitly, so
+# /etc/default/useradd never gets a say. Both spellings of the key are
+# written: `user: shell:` is the 3.3 one, `userShell` its legacy alias.
+USERS_CONF=/etc/calamares/modules/users.conf
+if [[ -f "$USERS_CONF" ]] && ! grep -q '^userShell:' "$USERS_CONF"; then
+    cat >> "$USERS_CONF" <<'EOF'
+
+userShell: /bin/zsh
+user:
+    shell: /bin/zsh
+EOF
+fi
+if ! grep -q '^userShell: /bin/zsh$' "$USERS_CONF"; then
+    echo "0040-calamares: $USERS_CONF does not set zsh as the user shell" >&2
+    exit 1
+fi
+
 # Set up unpackfs to install from the live squashfs
 cat > /etc/calamares/modules/unpackfs.conf <<'EOF'
 ---
@@ -154,6 +181,27 @@ installEFIFallback: true
 grubInstallArguments: []
 EOF
 
+# Offline bootloader swap. The image ships grub-efi-amd64, and grub-pc
+# conflicts with it, so a BIOS install has to swap them inside the target.
+# Debian's own live images solve this with an apt pool on the medium; ours
+# has none, and the target has no apt lists at install time, so we stash
+# the one missing .deb in the squashfs for the target fixup to dpkg -i.
+# Everything grub-pc depends on (grub-common, grub2-common, grub-pc-bin,
+# ucf, debconf) is already installed. The fixup deletes the stash again.
+OFFLINE_DEBS=/usr/share/sloppinux/offline-debs
+mkdir -p "$OFFLINE_DEBS"
+(
+    cd "$OFFLINE_DEBS"
+    rm -f grub-pc_*.deb
+    # _apt cannot write here when sandboxed; root downloading is fine.
+    # /usr/bin on purpose: skip the hallucinating wrapper in /usr/local/bin.
+    /usr/bin/apt-get -o APT::Sandbox::User=root download grub-pc
+)
+if ! ls "$OFFLINE_DEBS"/grub-pc_*.deb >/dev/null 2>&1; then
+    echo "0040-calamares: could not stash grub-pc for offline BIOS installs" >&2
+    exit 1
+fi
+
 # Target-side fixup script. It lives in the squashfs, so unpackfs copies it
 # into the target, and the shellprocess instance below just runs it there.
 #
@@ -174,13 +222,54 @@ export DEBIAN_FRONTEND=noninteractive
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 log() { echo "[sloppinux-target-fixup] $*"; }
 
+# 0. Pin what the cleanup below must not take with it. The packages step
+#    runs `apt-get --purge autoremove` after every removal, and several
+#    things the installed system needs are only in the image as somebody
+#    else's dependency: grub2-common (update-grub, grub-install) hangs off
+#    grub-efi-amd64, cryptsetup off live-boot. Marking them manual keeps a
+#    BIOS install able to regenerate grub.cfg and a LUKS install able to
+#    open its own root. Unknown names are skipped one by one.
+for pkg in grub-common grub2-common grub-pc-bin os-prober \
+           cryptsetup cryptsetup-initramfs keyutils; do
+    apt-mark manual "$pkg" >/dev/null 2>&1 || true
+done
+
 # 1. Bootloader packages. The squashfs ships grub-efi-amd64; on a BIOS
 #    machine swap it for grub-pc before Calamares runs grub-install.
+#    The target has no apt lists during install (and maybe no network), so
+#    grub-pc comes from the .deb the build stashed in OFFLINE_DEBS; all of
+#    its dependencies are already in the image. apt is only the fallback.
+OFFLINE_DEBS=/usr/share/sloppinux/offline-debs
 if [ ! -d /sys/firmware/efi ]; then
     log "BIOS firmware detected, swapping grub-efi for grub-pc"
-    apt-get remove -y grub-efi-amd64 grub-efi-amd64-signed shim-signed efibootmgr || true
-    apt-get install -y grub-pc grub-common || true
+    # No explicit removal of the EFI side: grub-pc conflicts with
+    # grub-efi-amd64, so dpkg/apt replace it on their own, and
+    # grub-efi-amd64-signed + shim-signed are Protected, which makes
+    # `apt-get remove -y` abort the whole transaction ("Essential packages
+    # were removed and -y was used"). They coexist with grub-pc and are
+    # inert on a BIOS machine.
+    # Tell grub-pc which disk it lives on, so later grub upgrades refresh
+    # the boot sector instead of asking the human. Best-effort: the disk
+    # under / is where Calamares puts the bootloader by default.
+    rootsrc=$(findmnt -no SOURCE / 2>/dev/null || true)
+    bootdisk=""
+    if [ -n "$rootsrc" ]; then
+        # -r: raw output, or NAME arrives decorated with tree-drawing chars.
+        bootdisk=$(lsblk -snrpo NAME,TYPE "$rootsrc" 2>/dev/null | awk '$2 == "disk" { print $1; exit }')
+    fi
+    if [ -b "$bootdisk" ]; then
+        log "preseeding grub-pc install device: $bootdisk"
+        echo "grub-pc grub-pc/install_devices multiselect $bootdisk" | debconf-set-selections || true
+    fi
+    grub_deb=$(ls "$OFFLINE_DEBS"/grub-pc_*.deb 2>/dev/null | head -n 1)
+    if [ -n "$grub_deb" ] && dpkg -i "$grub_deb"; then
+        log "installed grub-pc from $grub_deb"
+    else
+        log "no usable stashed grub-pc, asking apt (needs a network)"
+        apt-get install -y grub-pc grub-common || true
+    fi
 fi
+rm -rf "$OFFLINE_DEBS"
 
 # 2. Live-only configuration that is not owned by any package and would
 #    otherwise survive into the installed system.
@@ -221,20 +310,20 @@ fi
 #    /usr/share/applications/calamares.desktop (preinst renames the real file
 #    to calamares.desktop.orig). On removal its postrm un-diverts with
 #    `dpkg-divert --rename`, which refuses if a real file exists at BOTH the
-#    diverted path AND its .orig target. Sloppinux takes approach (b) — we
-#    never write a real file to the diverted path (our launcher is
-#    sloppinux-install.desktop) — so under a correct build this guard finds
-#    nothing to do. It is belt-and-braces for upgraded-in-place images where
-#    an older build may have left a stray calamares.desktop: if both files
-#    are present and our calamares.desktop is NOT dpkg-owned, drop it so the
-#    un-divert can proceed. We never touch the .orig original (that IS the
-#    real package file).
+#    diverted path AND its .orig target, and the removal dies with apt exit
+#    100. Sloppinux never writes a real file to the diverted path (our
+#    launcher is sloppinux-install.desktop), so under a correct build this
+#    guard finds nothing to do. It is belt-and-braces for images where an
+#    older build left a stray calamares.desktop behind.
+#    While the diversion is active, dpkg's own copy lives at .orig, so
+#    anything sitting at the diverted path is by definition not dpkg's and
+#    safe to drop. (`dpkg-query -S` is no use here: it reports the path as
+#    owned by calamares whether or not a stray file occupies it.)
 DIVERTED=/usr/share/applications/calamares.desktop
-if [ -f "$DIVERTED" ] && [ -f "$DIVERTED.orig" ]; then
-    if ! dpkg-query -S "$DIVERTED" >/dev/null 2>&1; then
-        log "resolving calamares.desktop diversion: dropping non-dpkg copy"
-        rm -f "$DIVERTED" || true
-    fi
+if [ -f "$DIVERTED" ] && [ -f "$DIVERTED.orig" ] \
+   && [ "$(dpkg-divert --truename "$DIVERTED" 2>/dev/null)" = "$DIVERTED.orig" ]; then
+    log "resolving calamares.desktop diversion: dropping stray copy"
+    rm -f "$DIVERTED" || true
 fi
 
 # 4a. The installer itself. The "packages" step (later in the sequence) now
@@ -250,6 +339,7 @@ if dpkg -s calamares >/dev/null 2>&1; then
 fi
 rm -rf /etc/calamares
 rm -f /usr/local/bin/sloppinux-installer-autostart
+rm -f /usr/share/applications/sloppinux-install.desktop
 
 # 4b. Post-install survey. Capture what the human did to their disks so
 #     sloppinux-install-survey.service can have the model grade it on first
