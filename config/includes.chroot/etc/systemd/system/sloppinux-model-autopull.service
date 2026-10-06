@@ -1,5 +1,5 @@
 # First-boot inference capacity right-sizing for installed Sloppinux systems.
-# Pulls one larger ollama model tiered by total RAM; see
+# Pulls a coding model tiered by total RAM, plus a half-size fallback; see
 # /usr/local/bin/sloppinux-model-autopull for the tiers and retry rules.
 [Unit]
 Description=Sloppinux first-boot model autopull (RAM-tiered ollama model)

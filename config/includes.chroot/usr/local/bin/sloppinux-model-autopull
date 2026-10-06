@@ -5,8 +5,16 @@ sloppinux-model-autopull
 First-boot capability-surface expansion for INSTALLED Sloppinux systems.
 
 The ISO ships one small baked model so `ai` works offline on any hardware.
-Once installed onto real disk, this pulls ONE larger model sized to the
-machine's total RAM, so sloppinux-pick-model has something worth picking.
+Once installed onto real disk, this pulls a larger coding model sized to
+the machine's total RAM, plus one about half its size, so that
+sloppinux-pick-model has something worth picking both on a quiet machine
+and when a browser has eaten most of the memory.
+
+    sloppinux-model-autopull --list     show the ladder and this machine's rung
+    sloppinux-model-autopull --dry-run  say what would be pulled, pull nothing
+
+The ladder can be replaced with /etc/sloppinux/model-tiers.conf: one rung
+per line, "MIN_RAM_GIB MODEL DOWNLOAD_GB", # for comments.
 
 Runs from sloppinux-model-autopull.service. Behaviour:
   * live session (/run/live/medium exists): do nothing. The overlay there is
@@ -42,15 +50,26 @@ DISK_HEADROOM_GB = 5.0
 # machine would land one tier lower than intended.
 RAM_SLACK_GIB = 0.75
 
-# (minimum total RAM in GiB, model, approximate download size in GB)
-# Largest first. Sizes are the Q4 defaults from the ollama library and only
-# drive the disk-space check, so rough is fine.
+# (minimum total RAM in GiB, model, download size in GB)
+# Largest first. All of them are coding models: the job here is turning
+# typos into shell commands and letting `ai` drive a root shell, and that
+# is what they are trained on. Same family as the baked qwen2.5-coder:1.5b
+# up to 14b, then the agentic coders. Sizes are the default (Q4) tags as
+# the ollama registry reported them in October 2026; they drive the disk
+# check and the choice of fallback, so rough is fine.
 TIERS = [
-    (40, "qwen2.5:32b", 20.0),
-    (20, "qwen2.5:14b", 9.0),
-    (12, "llama3.1:8b", 4.9),
-    (6, "llama3.2:3b", 2.0),
+    (40, "qwen3-coder:30b", 18.6),
+    (28, "devstral:24b", 14.3),
+    (20, "qwen2.5-coder:14b", 9.0),
+    (12, "qwen2.5-coder:7b", 4.7),
+    (6, "qwen2.5-coder:3b", 1.9),
 ]
+TIERS_FILE = "/etc/sloppinux/model-tiers.conf"
+# The second model pulled is the largest rung no bigger than this fraction
+# of the first. sloppinux-pick-model takes the largest model that fits in
+# FREE RAM, so without it a busy machine drops straight from its best model
+# to the 1 GB baked one.
+FALLBACK_FRACTION = 0.55
 
 
 def log(msg):
@@ -134,17 +153,73 @@ def normalize(name):
     return name if ":" in name else f"{name}:latest"
 
 
-def pick_tier(ram_gib, free_gb):
-    """Largest model that fits the RAM tier AND the free disk space."""
-    for min_gib, model, size_gb in TIERS:
+def load_tiers():
+    """The ladder, largest first: from TIERS_FILE if it holds at least one
+    valid rung, otherwise the built-in one."""
+    try:
+        with open(TIERS_FILE) as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return TIERS
+    tiers = []
+    for n, line in enumerate(lines, 1):
+        fields = line.split("#", 1)[0].split()
+        if not fields:
+            continue
+        try:
+            min_gib, model, size_gb = float(fields[0]), fields[1], float(fields[2])
+            if len(fields) != 3 or min_gib < 0 or size_gb <= 0:
+                raise ValueError
+        except (ValueError, IndexError):
+            log(f"{TIERS_FILE}:{n}: expected 'MIN_RAM_GIB MODEL DOWNLOAD_GB', ignoring")
+            continue
+        tiers.append((min_gib, model, size_gb))
+    if not tiers:
+        log(f"{TIERS_FILE} has no usable rungs, using the built-in ladder")
+        return TIERS
+    return sorted(tiers, key=lambda t: t[0], reverse=True)
+
+
+def plan(tiers, ram_gib, free_gb, quiet=False):
+    """What this machine should have: [(model, size_gb)], best first.
+
+    The first entry is the largest model whose rung the RAM reaches and
+    that fits on disk; the second, if any, is its half-size fallback. Empty
+    when the machine is too small for any rung."""
+    say = (lambda _msg: None) if quiet else log
+    wanted = []
+    budget = free_gb - DISK_HEADROOM_GB
+    for min_gib, model, size_gb in tiers:
         if ram_gib + RAM_SLACK_GIB < min_gib:
             continue
-        if size_gb + DISK_HEADROOM_GB > free_gb:
-            log(f"skipping {model}: needs ~{size_gb + DISK_HEADROOM_GB:.0f} GB free, "
-                f"have {free_gb:.1f} GB")
+        if wanted and size_gb > wanted[0][1] * FALLBACK_FRACTION:
             continue
-        return model
-    return None
+        if size_gb > budget:
+            say(f"skipping {model}: needs ~{size_gb:.0f} GB more than the "
+                f"{budget:.1f} GB the disk can spare")
+            continue
+        wanted.append((model, size_gb))
+        budget -= size_gb
+        if len(wanted) == 2:
+            break
+    return wanted
+
+
+def show_ladder(tiers):
+    ram = total_ram_gib()
+    free = free_disk_gb(MODELS_DIR)
+    wanted = plan(tiers, ram, free, quiet=True)
+    source = TIERS_FILE if tiers is not TIERS else "built in"
+    print(f"# {ram:.1f} GiB RAM, {free:.1f} GB free for models, ladder: {source}")
+    for min_gib, model, size_gb in tiers:
+        role = ""
+        if wanted and model == wanted[0][0]:
+            role = "  <- this machine"
+        elif len(wanted) > 1 and model == wanted[1][0]:
+            role = "  <- fallback for when RAM is busy"
+        print(f"{min_gib:>4.0f} GiB and up  {model:<22} {size_gb:5.1f} GB{role}")
+    if not wanted:
+        print("# nothing here fits: this machine keeps the baked model only")
 
 
 def pull(model):
@@ -184,10 +259,16 @@ def pull(model):
 
 
 def main():
-    if os.path.exists("/run/live/medium"):
+    tiers = load_tiers()
+    if "--list" in sys.argv[1:]:
+        show_ladder(tiers)
+        return 0
+    dry_run = "--dry-run" in sys.argv[1:]
+
+    if os.path.exists("/run/live/medium") and not dry_run:
         log("live session detected, not pulling onto a RAM-backed overlay")
         return 0
-    if os.path.exists(MARKER):
+    if os.path.exists(MARKER) and not dry_run:
         log(f"already done ({MARKER} exists)")
         return 0
 
@@ -202,15 +283,22 @@ def main():
     log(f"total RAM {ram:.1f} GiB, {free:.1f} GB free for models, "
         f"installed models: {', '.join(tags) or 'none'}")
 
-    model = pick_tier(ram, free)
-    if model is None:
+    wanted = plan(tiers, ram, free)
+    if not wanted:
         log("no larger model fits this machine, keeping the baked model only")
-        write_marker("nothing-fits")
+        if not dry_run:
+            write_marker("nothing-fits")
         return 0
 
-    if normalize(model) in {normalize(t) for t in tags}:
-        log(f"{model} already present, nothing to do")
-        write_marker(f"present {model}")
+    present = {normalize(t) for t in tags}
+    missing = [model for model, _size in wanted if normalize(model) not in present]
+    log("plan: " + ", ".join(
+        f"{model} ({'present' if model not in missing else f'{size:.1f} GB to pull'})"
+        for model, size in wanted))
+    if dry_run:
+        return 0
+    if not missing:
+        write_marker("present " + " ".join(model for model, _size in wanted))
         return 0
 
     if not wait_for_registry():
@@ -218,22 +306,23 @@ def main():
             "will retry next boot")
         return 0
 
-    log(f"pulling {model} for a {ram:.0f} GiB machine (this can take a while)")
-    try:
-        pull(model)
-    except Exception as e:  # network drop, registry error, disk full, ...
-        n = record_failure()
-        if n >= MAX_FAILURES:
-            log(f"pull of {model} failed ({e}); {n} failures, giving up. "
-                f"Remove {MARKER} and {FAILURES} to try again.")
-            write_marker(f"gave-up {model}")
-        else:
-            log(f"pull of {model} failed ({e}); attempt {n}/{MAX_FAILURES}, "
-                "will retry next boot")
-        return 0
+    for model in missing:
+        log(f"pulling {model} for a {ram:.0f} GiB machine (this can take a while)")
+        try:
+            pull(model)
+        except Exception as e:  # network drop, registry error, disk full, ...
+            n = record_failure()
+            if n >= MAX_FAILURES:
+                log(f"pull of {model} failed ({e}); {n} failures, giving up. "
+                    f"Remove {MARKER} and {FAILURES} to try again.")
+                write_marker(f"gave-up {model}")
+            else:
+                log(f"pull of {model} failed ({e}); attempt {n}/{MAX_FAILURES}, "
+                    "will retry next boot")
+            return 0
+        log(f"{model} is ready; sloppinux-pick-model will use it when RAM allows")
 
-    log(f"{model} is ready; sloppinux-pick-model will use it when RAM allows")
-    write_marker(f"pulled {model}")
+    write_marker("pulled " + " ".join(missing))
     return 0
 
 
