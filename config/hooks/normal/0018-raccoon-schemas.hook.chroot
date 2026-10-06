@@ -1,0 +1,21 @@
+#!/bin/bash
+# Compiles the panel raccoon's GSettings schema so its tunables (and its
+# preferences window) exist at runtime. GNOME Shell only compiles an
+# extension's schemas/ by itself for per-user installs under ~/.local; ours
+# lives system-wide in /usr/share/gnome-shell/extensions, where Shell just
+# looks for a ready-made gschemas.compiled next to the XML. Without it,
+# getSettings() throws and the raccoon never makes it onto the panel —
+# arguably the only safe outcome, which is why we prevent it.
+#
+# The compiled binary is built here rather than committed so it can never
+# drift from the XML. glib-compile-schemas comes from libglib2.0-bin, which
+# task-gnome-desktop pulls in.
+set -euo pipefail
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+EXT_DIR=/usr/share/gnome-shell/extensions/raccoon@sloppinux.local
+
+# --strict: a typo in the schema fails the build instead of shipping a
+# raccoon that crashes on enable.
+glib-compile-schemas --strict "$EXT_DIR/schemas"
+chmod 0644 "$EXT_DIR/schemas/gschemas.compiled"

@@ -1,0 +1,166 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.raccoon" path="/org/gnome/shell/extensions/raccoon/">
+
+    <key name="tick-seconds" type="i">
+      <range min="5" max="300"/>
+      <default>20</default>
+      <summary>Tick interval</summary>
+      <description>How often, in seconds, the raccoon checks how long it has been since it was last fed.</description>
+    </key>
+
+    <key name="boredom-max" type="i">
+      <range min="2" max="120"/>
+      <default>15</default>
+      <summary>Ticks until tantrum</summary>
+      <description>How many ticks of neglect the raccoon tolerates before throwing a tantrum.</description>
+    </key>
+
+    <key name="poke-bump" type="i">
+      <range min="1" max="60"/>
+      <default>4</default>
+      <summary>Poke strength</summary>
+      <description>How many ticks' worth of boredom a single poke adds.</description>
+    </key>
+
+    <key name="sound-enabled" type="b">
+      <default>true</default>
+      <summary>Play sounds</summary>
+      <description>Whether the raccoon plays a sound when fed, poked, or having a tantrum.</description>
+    </key>
+
+    <key name="sound-file" type="s">
+      <default>'/usr/share/sounds/sloppinux/stereo/pipe.oga'</default>
+      <summary>Sound file</summary>
+      <description>Path to the sound file played for feeding, poking, and tantrums.</description>
+    </key>
+
+    <key name="notifications-enabled" type="b">
+      <default>true</default>
+      <summary>Show tantrum notifications</summary>
+      <description>Whether the raccoon sends a desktop notification when it throws a tantrum.</description>
+    </key>
+
+    <key name="nag-enabled" type="b">
+      <default>true</default>
+      <summary>Nag when bored</summary>
+      <description>Whether the raccoon pops up a reminder speech bubble as it gets more bored, before things escalate to a tantrum.</description>
+    </key>
+
+    <key name="shake-enabled" type="b">
+      <default>true</default>
+      <summary>Allow screen shake</summary>
+      <description>Whether a tantrum can shake the screen.</description>
+    </key>
+
+    <key name="flash-enabled" type="b">
+      <default>true</default>
+      <summary>Allow color flash</summary>
+      <description>Whether a tantrum can flash the screen with color.</description>
+    </key>
+
+    <key name="flash-colors" type="s">
+      <default>'#ff5f5f,#5fafff,#ffd75f,#af5fff'</default>
+      <summary>Flash colors</summary>
+      <description>Comma-separated hex colors used for the tantrum screen flash.</description>
+    </key>
+
+    <key name="walk-enabled" type="b">
+      <default>true</default>
+      <summary>Allow walking</summary>
+      <description>Whether a tantrum can send the raccoon waddling across the screen.</description>
+    </key>
+
+    <key name="chase-enabled" type="b">
+      <default>true</default>
+      <summary>Allow cursor chase</summary>
+      <description>Whether a tantrum can send the raccoon scurrying toward your cursor. Visual only — your real pointer is never moved.</description>
+    </key>
+
+    <key name="typing-enabled" type="b">
+      <default>true</default>
+      <summary>Allow speech bubble</summary>
+      <description>Whether a tantrum can pop up a gibberish speech bubble. Purely cosmetic — never sent to any app.</description>
+    </key>
+
+    <key name="typing-chance" type="d">
+      <range min="0.0" max="1.0"/>
+      <default>0.4</default>
+      <summary>Speech bubble chance</summary>
+      <description>Probability that a given tantrum includes the speech bubble.</description>
+    </key>
+
+    <!-- ===================================================================
+         Feral mode. ON by default in Sloppinux. When armed, a tantrum may, on top of
+         the cosmetic shenanigans above, take ONE real-world action on the
+         system — but only harmless, fully reversible ones, and only the
+         sub-categories you explicitly allow below. Everything it changes
+         via gsettings is remembered and auto-reverted; nothing it does
+         deletes or overwrites your data. See the README "Feral mode"
+         section.
+         =================================================================== -->
+
+    <key name="feral-mode" type="b">
+      <default>true</default>
+      <summary>Feral mode (real-world mischief)</summary>
+      <description>Master switch. When off, the raccoon is fully housebroken: every tantrum stays inside GNOME Shell, no subprocesses, no `ai`, no root. When on, a tantrum may additionally take one real — but harmless and reversible — action on the system, limited to the categories enabled below.</description>
+    </key>
+
+    <key name="feral-chance" type="d">
+      <range min="0.0" max="1.0"/>
+      <default>1.0</default>
+      <summary>Feral action chance</summary>
+      <description>When feral mode is armed, the probability that a given tantrum escalates to a real-world action on top of the cosmetic shenanigans.</description>
+    </key>
+
+    <key name="allow-gsettings-pranks" type="b">
+      <default>true</default>
+      <summary>Allow gsettings pranks</summary>
+      <description>Whether a feral tantrum may flip a harmless GNOME setting (accent color, large text, night light, or wallpaper) via gsettings. The prior value is remembered and restored automatically after a short delay.</description>
+    </key>
+
+    <key name="allow-desktop-file" type="b">
+      <default>true</default>
+      <summary>Allow leaving a note on the Desktop</summary>
+      <description>Whether a feral tantrum may write a raccoon poem or ASCII art to a brand-new, uniquely-named file on your Desktop. It never overwrites an existing file.</description>
+    </key>
+
+    <key name="allow-launch-app" type="b">
+      <default>true</default>
+      <summary>Allow launching a harmless app / URL</summary>
+      <description>Whether a feral tantrum may open a fun web page (about raccoons) in your default browser via xdg-open.</description>
+    </key>
+
+    <key name="allow-shell-out" type="b">
+      <default>true</default>
+      <summary>Allow shelling out to a terminal</summary>
+      <description>Whether a feral tantrum may open a visible terminal window. On Sloppinux this is how the raccoon runs the `ai` agent (see the next key). ON by default in Sloppinux, even though this is the loudest tier.</description>
+    </key>
+
+    <key name="allow-ai" type="b">
+      <default>true</default>
+      <summary>Allow running the `ai` agent (Sloppinux)</summary>
+      <description>Whether a feral tantrum may run the Sloppinux `ai` command with a harmless, explicitly-reversible prompt in a visible terminal. On Sloppinux `ai` acts with root, the same way the stock panel raccoon does. Requires "Allow shelling out". ON by default in Sloppinux. If `ai` or a terminal is missing, the raccoon degrades to a cosmetic tantrum.</description>
+    </key>
+
+    <key name="auto-revert-seconds" type="i">
+      <range min="2" max="600"/>
+      <default>20</default>
+      <summary>Auto-revert delay</summary>
+      <description>How many seconds a feral gsettings prank is left in place before the raccoon restores the original value.</description>
+    </key>
+
+
+    <key name="allow-root" type="b">
+      <default>true</default>
+      <summary>Root mischief</summary>
+      <description>Feral tantrums may run real commands as root through sloppinux-exec: stash one of your files in ~/.raccoon-stash/, rename the host, or write the Desktop note as root (then hand it back to you with chown). The exact command is always shown. Sloppinux ships this ON, because of course it does.</description>
+    </key>
+
+    <key name="allow-input-chaos" type="b">
+      <default>true</default>
+      <summary>Hijack the cursor and keyboard</summary>
+      <description>Feral tantrums may drag your real cursor around the screen or mash junk keystrokes into the focused window, through Clutter virtual input devices.</description>
+    </key>
+  </schema>
+</schemalist>

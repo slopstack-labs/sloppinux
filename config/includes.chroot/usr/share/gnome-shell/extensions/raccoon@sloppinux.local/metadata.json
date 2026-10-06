@@ -1,7 +1,8 @@
 {
     "uuid": "raccoon@sloppinux.local",
     "name": "Sloppy Raccoon",
-    "description": "A raccoon lives in your panel. Feed it (drag a file onto it) or it gets bored and improvises — with root. A tantrum runs a real, annoying, slightly-destructive action (drags your cursor around, mashes keystrokes into whatever's focused, hides one of your files, renames the host, repaints the desktop) and then shows you exactly what it did. Root access by default.",
+    "description": "A raccoon lives in your panel. Feed it (drag a file onto it) or it gets bored and improvises — with root. A tantrum runs a real, annoying, slightly-destructive action (drags your cursor around, mashes keystrokes into whatever's focused, hides one of your files, renames the host, repaints the desktop) and then shows you exactly what it did. Poke it (middle click), and it nags, walks, chases your cursor and talks back. Feral mode and root access are ON by default; tune or disarm it in Settings.",
     "shell-version": ["45", "46", "47", "48"],
-    "url": "https://github.com/slopstack-labs/sloppinux"
+    "url": "https://github.com/slopstack-labs/sloppinux",
+    "settings-schema": "org.gnome.shell.extensions.raccoon"
 }

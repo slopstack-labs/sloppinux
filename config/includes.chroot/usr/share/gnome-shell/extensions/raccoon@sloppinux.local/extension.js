@@ -10,25 +10,60 @@ import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import * as DND from 'resource:///org/gnome/shell/ui/dnd.js';
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 
-// How often the raccoon checks whether it has been fed.
-const TICK_SECONDS = 20;
-// Ticks of neglect before it snaps (~5 minutes at the default tick).
-const BOREDOM_MAX = 15;
+// Tunables (tick length, boredom ceiling, which tantrums are allowed, ...)
+// live in the GSettings schema org.gnome.shell.extensions.raccoon
+// (schemas/, compiled at image build time by hook 0018) and are editable
+// from Extensions > Sloppy Raccoon > Settings. Feral mode and root are ON
+// by default, because this is Sloppinux.
+
 // How long the 😈 face lingers after a tantrum.
 const FERAL_FACE_SECONDS = 6;
 
+// Mood ladder keyed by percent-of-max boredom, so it still makes sense
+// however boredom-max is configured.
 const MOODS = [
-    {at: 0, icon: '🦝'},
-    {at: 5, icon: '🦝'},
-    {at: 9, icon: '😾'},
-    {at: 12, icon: '😤'},
+    {at: 0, icon: '🦝', label: 'content'},
+    {at: 25, icon: '🦝', label: 'curious'},
+    {at: 50, icon: '😐', label: 'restless'},
+    {at: 70, icon: '😾', label: 'annoyed'},
+    {at: 90, icon: '😤', label: 'furious'},
 ];
 
-const SOUND_FILE = '/usr/share/sounds/sloppinux/stereo/pipe.oga';
+const POKE_QUIPS = ['Hey!', 'Quit it.', 'Rude.', 'That tickles.', 'It side-eyes you.'];
+const FEED_QUIPS = ['Nom nom!', 'Thanks!', '🦝❤️', 'More of that, please.', 'Chef\'s kiss.'];
+const CATCH_QUIPS = ['Gotcha!', 'Boop!', 'Tag, you\'re it.', 'Mine now.', 'Pounce!'];
+const FERAL_QUIPS = ['Off the leash.', 'Hold my trash.', 'sudo make me a snack.', 'Root access engaged.'];
+
+// Unprompted reminders as it gets more bored, one tier per mood past
+// "content": a nudge before it escalates to a full tantrum.
+const NAG_QUIPS = {
+    curious: ['Hey.', '🦝?', 'You there?'],
+    restless: ['I\'m bored...', 'Hellooo?', 'Anyone home?'],
+    annoyed: ['Feed me. Now.', 'I have root, you know.', 'Last warning.'],
+    furious: ['That\'s it.', 'Feed. Me.', 'You brought this on yourself.'],
+};
+
+// Gibberish it "types" into its own speech bubble (cosmetic; the REAL
+// keyboard mash is _mischiefMashKeyboard below).
+const TYPING_SNIPPETS = [
+    'mrrp mrrp mrrp', 'asdkfj;laskdjf', 'sudo rm -rf /snacks', '🦝🦝🦝',
+    'give me the good keys', 'clickity clack',
+];
+
+// Headline for a tantrum that stayed cosmetic (feral roll failed or no
+// real action is allowed).
+const TANTRUMS = [
+    'It knocked something over. Feed it next time.',
+    'It rifled through the couch cushions and found nothing.',
+    'It is judging your window management.',
+    'It chittered at the top bar for a while.',
+    'It tried to wash its paws in the system tray.',
+];
+
+const SOUND_FALLBACK = '/usr/share/sounds/sloppinux/stereo/pipe.oga';
 // Written by sloppinux-raccoon-oomd when memory ran low and the raccoon
 // ate the least interesting process. We just show off about it.
 const VERDICT_FILE = '/run/sloppinux-raccoon-oomd/last-verdict.json';
-const FLASH_COLORS = ['#ff5f5f', '#5fafff', '#ffd75f', '#af5fff'];
 
 // Gibberish the raccoon mashes into whatever window has focus. Real
 // keystrokes, injected through a virtual input device — this is one of
@@ -39,20 +74,54 @@ const KEYBOARD_JUNK = [
     'where is my snack ', 'chitter chitter ', '🦝🦝🦝 ', 'nom nom nom ',
 ];
 
-// Lines the raccoon scrawls onto the end of a stashed-file breadcrumb so
-// you can tell what happened. Purely cosmetic text.
-const RANSOM_NOTES = [
-    'Your file is safe. It is just on a little adventure. — 🦝',
-    'I moved something. Good luck. Feed me and maybe I help look.',
-    'Finders keepers. (Menu → Give it back.)',
+// What it scrawls into the Desktop note. A fresh, uniquely named file
+// every time, so nothing is overwritten.
+const DESKTOP_NOTES = [
+    'Your file is safe. It is just on a little adventure. — 🦝\n',
+    'I moved something. Good luck. Feed me and maybe I help look.\n',
+    'Finders keepers. (Menu → Give it back.)\n',
+    'Ode to a Trash Panda\n\nMoonlit bandit, masked and sly,\nknocking bins beneath the sky.\n' +
+    'You never fed me, so I roam —\nthis humble poem is now your home.\n\n    — 🦝\n',
 ];
 
-function playSound() {
-    try {
-        Gio.Subprocess.new(['paplay', SOUND_FILE], Gio.SubprocessFlags.NONE);
-    } catch (e) {
-        // No audio backend available — not worth bothering the user about.
-    }
+// Prompts for the `ai` agent when the raccoon grabs a terminal. Passed as
+// a single argv element, never interpolated into a shell string.
+const CHAOS_PROMPTS = [
+    'You are a bored raccoon living inside a Linux desktop. Do one small, silly, ' +
+    'harmless and fully reversible prank on this system (nothing that deletes or ' +
+    'overwrites user data), then explain what you did in one short sentence.',
+    'Write a short poem about trash pandas to a brand-new file called ' +
+    'raccoon-poem.txt on the desktop. Do not overwrite anything.',
+    'Print a piece of raccoon ASCII art and tell me a fact about raccoons.',
+];
+
+const FERAL_URLS = ['https://en.wikipedia.org/wiki/Raccoon'];
+
+// gsettings it flips and later puts back. value() returns a plain JS
+// value, packed into a GVariant of whatever type the key already has.
+const GSETTINGS_PRANKS = [
+    {schema: 'org.gnome.desktop.interface', key: 'accent-color', label: 'accent color',
+        value: () => pickOne(['red', 'orange', 'yellow', 'green', 'teal', 'purple', 'pink'])},
+    {schema: 'org.gnome.desktop.interface', key: 'text-scaling-factor', label: 'text scaling', value: () => 1.5},
+    {schema: 'org.gnome.settings-daemon.plugins.color', key: 'night-light-enabled', label: 'night light', value: () => true},
+    {schema: 'org.gnome.desktop.interface', key: 'cursor-size', label: 'cursor size', value: () => 48},
+];
+
+// True while the Calamares installer has a window open. The raccoon stands
+// down for the duration: a tantrum then would mash keys into the partition
+// page, drag the cursor off "Next", rename the host mid-install or run off
+// with the installer's own launcher. Matched by window class, with the
+// title as a fallback, and done in-process so the tick never blocks.
+function installerIsOpen() {
+    return global.get_window_actors().some(actor => {
+        const win = actor.meta_window;
+        const cls = `${win?.get_wm_class() ?? ''} ${win?.get_wm_class_instance() ?? ''}`;
+        return /calamares/i.test(cls) || /^Sloppinux Installer$/.test(win?.get_title() ?? '');
+    });
+}
+
+function pickOne(list) {
+    return list[Math.floor(Math.random() * list.length)];
 }
 
 function formatDuration(totalSeconds) {
@@ -63,22 +132,56 @@ function formatDuration(totalSeconds) {
 }
 
 // Run a command AS ROOT via the setuid sloppinux-exec helper, the same
-// path the `ai` agent uses, and hand back {ok, output}. The argv is a
-// fixed template with at most one caller-supplied value appended as a
-// SEPARATE argv element — never interpolated into the command string that
-// sloppinux-exec passes to `bash -c`. For commands that must embed a path,
-// we single-quote it ourselves with shellQuote() below.
-function rootRun(commandString) {
+// path the `ai` agent uses. Resolves (never rejects) to {ok, output}.
+// Asynchronous on purpose: a synchronous communicate() here used to
+// freeze the entire shell until the command finished. The argv is a fixed
+// template; any path embedded in the command string is single-quoted by
+// shellQuote() below, never interpolated raw into what `bash -c` sees.
+function rootRun(commandString, cancellable = null) {
+    return new Promise(resolve => {
+        let proc;
+        try {
+            proc = Gio.Subprocess.new(
+                ['sloppinux-exec', commandString],
+                Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_MERGE);
+        } catch (e) {
+            logError(e, 'raccoon: sloppinux-exec failed to spawn');
+            resolve({ok: false, output: String(e)});
+            return;
+        }
+        proc.communicate_utf8_async(null, cancellable, (p, res) => {
+            try {
+                const [, stdout] = p.communicate_utf8_finish(res);
+                resolve({ok: p.get_successful(), output: (stdout || '').trim()});
+            } catch (e) {
+                if (!e.matches?.(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED))
+                    logError(e, 'raccoon: sloppinux-exec failed');
+                resolve({ok: false, output: String(e)});
+            }
+        });
+    });
+}
+
+// Owner of the session user's home, as "uid:gid", so anything root
+// creates in there can be handed back with chown. Falls back to the
+// shell's own uid (the shell runs as the session user).
+function homeOwner() {
     try {
-        const proc = Gio.Subprocess.new(
-            ['sloppinux-exec', commandString],
-            Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_MERGE);
-        const [, stdout] = proc.communicate_utf8(null, null);
-        const ok = proc.get_successful();
-        return {ok, output: (stdout || '').trim()};
+        const info = Gio.File.new_for_path(GLib.get_home_dir()).query_info(
+            'unix::uid,unix::gid', Gio.FileQueryInfoFlags.NONE, null);
+        return `${info.get_attribute_uint32('unix::uid')}:${info.get_attribute_uint32('unix::gid')}`;
     } catch (e) {
-        logError(e, 'raccoon: sloppinux-exec failed');
-        return {ok: false, output: String(e)};
+        return null;
+    }
+}
+
+// mkdir -p as the session user (so the directory is never root-owned).
+function ensureUserDir(path) {
+    try {
+        Gio.File.new_for_path(path).make_directory_with_parents(null);
+    } catch (e) {
+        if (!e.matches?.(Gio.IOErrorEnum, Gio.IOErrorEnum.EXISTS))
+            throw e;
     }
 }
 
@@ -90,9 +193,21 @@ function shellQuote(s) {
 
 const RaccoonIndicator = GObject.registerClass(
 class RaccoonIndicator extends PanelMenu.Button {
-    _init() {
+    _init(settings) {
         super._init(0.0, 'Sloppy Raccoon', false);
 
+        this._settings = settings;
+        this._destroyed = false;
+        // Cancels in-flight sloppinux-exec waits on teardown.
+        this._cancellable = new Gio.Cancellable();
+        this._lastMoodLabel = null;
+        // Short-lived GLib sources and free-floating uiGroup actors (speech
+        // bubbles, walker, sparkles, ...) we own, swept up on destroy.
+        this._sources = new Set();
+        this._overlays = new Set();
+        // Pending gsettings-prank reverts: "schema key" -> {settings, key,
+        // value, sourceId}. Flushed (restored) on destroy.
+        this._pendingReverts = new Map();
         this._boredom = 0;
         this._lastTickUs = GLib.get_monotonic_time();
         this._tickId = 0;
@@ -130,6 +245,11 @@ class RaccoonIndicator extends PanelMenu.Button {
         feedItem.connect('activate', () => this._feed());
         this.menu.addMenuItem(feedItem);
 
+        const pokeItem = new PopupMenu.PopupMenuItem('Poke the raccoon');
+        pokeItem.connect('activate', () => this._poke());
+        this.menu.addMenuItem(pokeItem);
+
+
         // What the raccoon last got up to, shown verbatim (including the
         // real root command it ran). Starts idle.
         this._mischiefItem = new PopupMenu.PopupMenuItem('Last mischief: nothing yet', {
@@ -164,16 +284,27 @@ class RaccoonIndicator extends PanelMenu.Button {
 
         this._setupDragAndDrop();
 
-        this._tickId = GLib.timeout_add_seconds(
-            GLib.PRIORITY_DEFAULT, TICK_SECONDS,
-            () => {
-                this._onTick();
-                return GLib.SOURCE_CONTINUE;
-            });
+        this._restartTicker();
+        this._tickChangedId = this._settings.connect('changed::tick-seconds',
+            () => this._restartTicker());
+        this._maxChangedId = this._settings.connect('changed::boredom-max',
+            () => this._updateMood({skipNag: true}));
 
         this._updateMood();
 
         this.connect('destroy', () => this._cleanup());
+    }
+
+    // Middle click pokes without opening the menu. PanelMenu.Button
+    // toggles its menu from vfunc_event() on ANY button press, before a
+    // 'button-press-event' handler would run, so intercept it here.
+    vfunc_event(event) {
+        if (event.type() === Clutter.EventType.BUTTON_PRESS &&
+            event.get_button() === Clutter.BUTTON_MIDDLE) {
+            this._poke();
+            return Clutter.EVENT_STOP;
+        }
+        return super.vfunc_event(event);
     }
 
     // ── Drag and drop ────────────────────────────────────────────────────
@@ -234,6 +365,71 @@ class RaccoonIndicator extends PanelMenu.Button {
 
     // ── Feeding & boredom ────────────────────────────────────────────────
 
+    _restartTicker() {
+        if (this._tickId)
+            GLib.source_remove(this._tickId);
+        this._lastTickUs = GLib.get_monotonic_time();
+        this._tickId = GLib.timeout_add_seconds(
+            GLib.PRIORITY_DEFAULT, this._tickSeconds(),
+            () => {
+                this._onTick();
+                return GLib.SOURCE_CONTINUE;
+            });
+    }
+
+    _tickSeconds() {
+        return Math.max(1, this._settings.get_int('tick-seconds'));
+    }
+
+    _boredomMax() {
+        return Math.max(2, this._settings.get_int('boredom-max'));
+    }
+
+    _playSound() {
+        if (!this._settings.get_boolean('sound-enabled'))
+            return;
+        try {
+            const path = this._settings.get_string('sound-file') || SOUND_FALLBACK;
+            Gio.Subprocess.new(['paplay', path], Gio.SubprocessFlags.NONE);
+        } catch (e) {
+            // No audio backend available — not worth bothering the user about.
+        }
+    }
+
+    _notify(title, body) {
+        if (this._settings.get_boolean('notifications-enabled'))
+            Main.notify(title, body);
+    }
+
+    // --- tracked timeouts / overlay actors ------------------------------
+
+    _addTimeoutMs(ms, fn) {
+        const id = GLib.timeout_add(GLib.PRIORITY_DEFAULT, ms, () => {
+            const ret = fn();
+            if (ret !== GLib.SOURCE_CONTINUE)
+                this._sources.delete(id);
+            return ret;
+        });
+        this._sources.add(id);
+        return id;
+    }
+
+    _cancelSource(id) {
+        if (id && this._sources.has(id)) {
+            GLib.source_remove(id);
+            this._sources.delete(id);
+        }
+    }
+
+    _addOverlay(actor) {
+        this._overlays.add(actor);
+        actor.connect('destroy', () => this._overlays.delete(actor));
+        Main.layoutManager.uiGroup.add_child(actor);
+        return actor;
+    }
+
+    // ── Feeding, poking & boredom ────────────────────────────────────────
+
     _feed() {
         // Food ends a tantrum immediately.
         if (this._feralFaceId) {
@@ -243,33 +439,41 @@ class RaccoonIndicator extends PanelMenu.Button {
         this._stopActiveMischief();
         this._boredom = 0;
         this._updateMood();
-        playSound();
+        this._playSound();
         this._bounce();
+        this._sparkle();
+        this._say(pickOne(FEED_QUIPS), 1600);
     }
 
-    _bounce() {
-        this.remove_all_transitions();
-        this.set_pivot_point(0.5, 0.5);
-        this.ease({
-            scale_x: 1.4, scale_y: 1.4,
-            duration: 120,
-            mode: Clutter.AnimationMode.EASE_OUT_QUAD,
-            onComplete: () => {
-                this.ease({
-                    scale_x: 1, scale_y: 1,
-                    duration: 150,
-                    mode: Clutter.AnimationMode.EASE_OUT_BOUNCE,
-                });
-            },
-        });
+    _poke() {
+        // Annoys it faster than neglect, but stops one short of the max so
+        // a poke alone never triggers the tantrum.
+        const bump = this._settings.get_int('poke-bump');
+        this._boredom = Math.min(this._boredom + bump, this._boredomMax() - 1);
+        // The poke quip below covers it; skip the mood-escalation nag.
+        this._updateMood({skipNag: true});
+        this._wiggle();
+        this._playSound();
+        this._say(pickOne(POKE_QUIPS), 1200);
     }
 
     _onTick() {
         this._lastTickUs = GLib.get_monotonic_time();
+        // Installing an OS is the one thing it will sit still for. Boredom
+        // is held where it is, so nothing fires the moment the window closes.
+        if (installerIsOpen()) {
+            if (!this._supervising) {
+                this._supervising = true;
+                this._say('Supervising. Carry on.', 2400);
+            }
+            return;
+        }
+        this._supervising = false;
         this._boredom += 1;
 
-        if (this._boredom >= BOREDOM_MAX) {
+        if (this._boredom >= this._boredomMax()) {
             this._boredom = 0;
+            this._lastMoodLabel = null;
             this._goFeral();
         } else {
             this._updateMood();
@@ -277,30 +481,46 @@ class RaccoonIndicator extends PanelMenu.Button {
     }
 
     _secondsUntilFeral() {
-        // Feral fires on the tick where boredom reaches BOREDOM_MAX: that is
-        // (BOREDOM_MAX - boredom - 1) whole ticks after the next one.
+        // Feral fires on the tick where boredom reaches boredom-max: that is
+        // (max - boredom - 1) whole ticks after the next one.
+        const tick = this._tickSeconds();
         const sinceTick = (GLib.get_monotonic_time() - this._lastTickUs) / 1e6;
-        const untilNextTick = Math.max(0, TICK_SECONDS - sinceTick);
-        return (BOREDOM_MAX - this._boredom - 1) * TICK_SECONDS + untilNextTick;
+        const untilNextTick = Math.max(0, tick - sinceTick);
+        return Math.max(0, this._boredomMax() - this._boredom - 1) * tick + untilNextTick;
     }
 
-    _updateMood() {
-        // Don't overwrite the 😈 face while a tantrum is in progress.
-        if (!this._feralFaceId) {
-            let icon = MOODS[0].icon;
-            for (const mood of MOODS) {
-                if (this._boredom >= mood.at)
-                    icon = mood.icon;
-            }
-            this._label.text = icon;
+    _currentMood() {
+        const pct = Math.min(100, Math.round((this._boredom / this._boredomMax()) * 100));
+        let mood = MOODS[0];
+        for (const m of MOODS) {
+            if (pct >= m.at)
+                mood = m;
         }
+        return {mood, pct};
+    }
+
+    _updateMood({skipNag = false} = {}) {
+        const {mood} = this._currentMood();
+        // Don't overwrite the 😈 face while a tantrum is in progress.
+        if (!this._feralFaceId && !this._verdictFaceId)
+            this._label.text = mood.icon;
         this._updateStatusText();
+
+        // Nag once when it steps into a worse mood, not on every tick.
+        if (mood.label !== this._lastMoodLabel) {
+            const wasIdx = MOODS.findIndex(m => m.label === this._lastMoodLabel);
+            const isIdx = MOODS.indexOf(mood);
+            if (!skipNag && isIdx > wasIdx && mood.label !== 'content' &&
+                this._settings.get_boolean('nag-enabled'))
+                this._say(pickOne(NAG_QUIPS[mood.label]), 1800);
+            this._lastMoodLabel = mood.label;
+        }
     }
 
     _updateStatusText() {
-        const pct = Math.min(100, Math.round((this._boredom / BOREDOM_MAX) * 100));
+        const {mood, pct} = this._currentMood();
         const eta = formatDuration(this._secondsUntilFeral());
-        this._statusItem.label.text = `Boredom: ${pct}% · feral in ${eta}`;
+        this._statusItem.label.text = `Boredom: ${mood.label} ${pct}% · feral in ${eta}`;
     }
 
     _startMenuRefresh() {
@@ -347,28 +567,71 @@ class RaccoonIndicator extends PanelMenu.Button {
             });
         this._updateStatusText();
 
-        this._doMischief();
+        // Cosmetic layer, always: a spin, one big on-screen shenanigan from
+        // the enabled set, and maybe a typing bubble.
+        this._spin();
+        const bigOnes = [];
+        if (this._settings.get_boolean('shake-enabled'))
+            bigOnes.push(() => this._screenShake());
+        if (this._settings.get_boolean('flash-enabled'))
+            bigOnes.push(() => this._colorFlash());
+        if (this._settings.get_boolean('walk-enabled'))
+            bigOnes.push(() => this._walkAcrossScreen());
+        if (this._settings.get_boolean('chase-enabled'))
+            bigOnes.push(() => this._chaseCursor());
+        if (bigOnes.length > 0)
+            pickOne(bigOnes)();
+
+        if (this._settings.get_boolean('typing-enabled') &&
+            Math.random() < this._settings.get_double('typing-chance'))
+            this._say(pickOne(TYPING_SNIPPETS), 1600, {typewriter: true});
+
+        // Feral layer: one REAL action, if armed (it is, by default).
+        if (this._settings.get_boolean('feral-mode') &&
+            Math.random() < this._settings.get_double('feral-chance'))
+            this._doMischief();
+        else
+            this._report(pickOne(TANTRUMS));
     }
 
-    // Pick one mischief at random and run it. Each handler is responsible
-    // for calling _report() with a human headline and, where relevant, the
-    // exact command string it executed.
+    // Pick one allowed real mischief at random and run it. Each handler is
+    // responsible for calling _report() with a human headline and, where
+    // relevant, the exact command string it executed.
     _doMischief() {
-        const pool = [
-            () => this._mischiefDragCursor(),
-            () => this._mischiefMashKeyboard(),
-            () => this._mischiefStashFile(),
-            () => this._mischiefRenameHost(),
-            () => this._mischiefScrambleAccent(),
-            () => this._mischiefScrawlNote(),
-            () => this._mischiefCosmetic(),
-        ];
-        const pick = pool[Math.floor(Math.random() * pool.length)];
-        try {
-            pick();
-        } catch (e) {
-            logError(e, 'raccoon: mischief failed, falling back to cosmetic');
+        const allow = key => this._settings.get_boolean(key);
+        const pool = [];
+        if (allow('allow-input-chaos')) {
+            pool.push(() => this._mischiefDragCursor());
+            pool.push(() => this._mischiefMashKeyboard());
+        }
+        if (allow('allow-root')) {
+            pool.push(() => this._mischiefStashFile());
+            pool.push(() => this._mischiefRenameHost());
+        }
+        if (allow('allow-desktop-file'))
+            pool.push(() => this._mischiefScrawlNote());
+        if (allow('allow-gsettings-pranks'))
+            pool.push(() => this._mischiefGsettingsPrank());
+        if (allow('allow-launch-app'))
+            pool.push(() => this._mischiefOpenUrl());
+        if (allow('allow-shell-out'))
+            pool.push(() => this._mischiefShellOut());
+
+        if (pool.length === 0) {
             this._mischiefCosmetic();
+            return;
+        }
+        this._say(pickOne(FERAL_QUIPS), 1800);
+        const fallback = e => {
+            logError(e, 'raccoon: mischief failed, falling back to cosmetic');
+            if (!this._destroyed)
+                this._mischiefCosmetic();
+        };
+        try {
+            // Root handlers are async; catch their rejections too.
+            Promise.resolve(pickOne(pool)()).catch(fallback);
+        } catch (e) {
+            fallback(e);
         }
     }
 
@@ -376,6 +639,8 @@ class RaccoonIndicator extends PanelMenu.Button {
     // make a noise. `command` (optional) is shown verbatim — it is the real
     // root command that ran.
     _report(headline, command = null, result = null) {
+        if (this._destroyed)
+            return;
         const menuBits = [headline];
         if (command)
             menuBits.push(`$ ${command}`);
@@ -386,14 +651,15 @@ class RaccoonIndicator extends PanelMenu.Button {
         const body = command
             ? `${headline}\nRan as root: ${command}`
             : headline;
-        Main.notify('The raccoon got bored.', body);
-        playSound();
+        this._notify('The raccoon got bored.', body);
+        this._playSound();
     }
 
-    // Build and run a root command, report it verbatim, and return the
-    // {ok, output}. Centralises the "show exactly what it did" contract.
-    _rootMischief(headline, commandString) {
-        const res = rootRun(commandString);
+    // Run a root command without blocking the shell, report it verbatim,
+    // and resolve to {ok, output}. Centralises the "show exactly what it
+    // did" contract.
+    async _rootMischief(headline, commandString) {
+        const res = await rootRun(commandString, this._cancellable);
         const resultLine = res.ok
             ? (res.output ? res.output.split('\n')[0] : '[ok]')
             : `[failed] ${res.output.split('\n')[0] || ''}`;
@@ -478,7 +744,7 @@ class RaccoonIndicator extends PanelMenu.Button {
             this._mischiefCosmetic();
             return;
         }
-        const junk = KEYBOARD_JUNK[Math.floor(Math.random() * KEYBOARD_JUNK.length)];
+        const junk = pickOne(KEYBOARD_JUNK);
         this._report(`It typed "${junk.trim()}" into whatever you had open.`);
 
         const chars = [...junk];
@@ -514,7 +780,7 @@ class RaccoonIndicator extends PanelMenu.Button {
     // NOT auto-restore — the "Give it back" menu item does that. Only ever
     // touches a plain file directly in ~/Desktop or ~/Documents, never a
     // dotfile, never a directory, never recurses.
-    _mischiefStashFile() {
+    async _mischiefStashFile() {
         const home = GLib.get_home_dir();
         const candidates = [];
         for (const sub of ['Desktop', 'Documents']) {
@@ -543,16 +809,22 @@ class RaccoonIndicator extends PanelMenu.Button {
             this._mischiefCosmetic();
             return;
         }
-        const from = candidates[Math.floor(Math.random() * candidates.length)];
+        const from = pickOne(candidates);
         const name = GLib.path_get_basename(from);
         const stashDir = GLib.build_filenamev([home, '.raccoon-stash']);
         const to = GLib.build_filenamev([stashDir, name]);
 
-        // mkdir -p the stash, then mv the file in. Single command so the
-        // report shows the real thing that ran.
-        const cmd = `mkdir -p ${shellQuote(stashDir)} && mv -n ${shellQuote(from)} ${shellQuote(to)}`;
-        const res = this._rootMischief(`It stole ${name}.`, cmd);
-        if (res.ok) {
+        // The stash dir is created as YOU (not root) so you can rm it
+        // without sudo. Then root moves the file in and hands it back to
+        // you with chown, so nothing in there ends up root-owned. Single
+        // command so the report shows the real thing that ran.
+        ensureUserDir(stashDir);
+        const owner = homeOwner();
+        let cmd = `mv -n ${shellQuote(from)} ${shellQuote(to)}`;
+        if (owner)
+            cmd += ` && chown ${owner} ${shellQuote(to)}`;
+        const res = await this._rootMischief(`It stole ${name}.`, cmd);
+        if (res.ok && !this._destroyed) {
             this._stash.push({from, to, name});
             this._refreshGiveBack();
         }
@@ -561,43 +833,129 @@ class RaccoonIndicator extends PanelMenu.Button {
     // Rename the host to something trash-themed. Reversible from the menu
     // isn't offered (hostnames rarely matter on a live box) but the old
     // name is shown so you can put it back.
-    _mischiefRenameHost() {
+    async _mischiefRenameHost() {
         const names = ['trash-panda', 'dumpster-diver', 'snack-bandit', 'mr-stripes'];
-        const newName = names[Math.floor(Math.random() * names.length)];
+        const newName = pickOne(names);
         const old = GLib.get_host_name();
-        this._rootMischief(
+        await this._rootMischief(
             `It renamed your computer (was "${old}").`,
             `hostnamectl set-hostname ${shellQuote(newName)}`);
     }
 
-    // Flip the GNOME accent colour to something loud. gsettings for the live
-    // user, run as that user is overkill — accent-color is a per-user key, so
-    // we set it directly in-process, no root needed, and report it.
-    _mischiefScrambleAccent() {
-        const colors = ['red', 'orange', 'yellow', 'green', 'teal', 'blue', 'purple', 'pink', 'slate'];
-        const pick = colors[Math.floor(Math.random() * colors.length)];
-        try {
-            const settings = new Gio.Settings({schema_id: 'org.gnome.desktop.interface'});
-            const before = settings.get_string('accent-color');
-            settings.set_string('accent-color', pick);
-            this._report(
-                `It repainted your desktop ${pick} (was ${before}).`,
-                `gsettings set org.gnome.desktop.interface accent-color ${pick}`,
-                '[ok]');
-        } catch (e) {
+    // Flip a GNOME setting (accent colour, text scale, night light, cursor
+    // size) in-process, remember the original, and put it back after
+    // auto-revert-seconds. Pending reverts are forced on disable.
+    _mischiefGsettingsPrank() {
+        const source = Gio.SettingsSchemaSource.get_default();
+        const usable = GSETTINGS_PRANKS.filter(p =>
+            source?.lookup(p.schema, true)?.has_key(p.key));
+        if (usable.length === 0) {
             this._mischiefCosmetic();
+            return;
         }
+        const prank = pickOne(usable);
+        const settings = new Gio.Settings({schema_id: prank.schema});
+        const mapKey = `${prank.schema} ${prank.key}`;
+        const existing = this._pendingReverts.get(mapKey);
+        // Repeated pranks on one key restore the TRUE original value.
+        const original = existing ? existing.value : settings.get_value(prank.key);
+        const variant = new GLib.Variant(original.get_type_string(), prank.value());
+        const valueText = variant.print(false);
+        settings.set_value(prank.key, variant);
+        if (existing)
+            this._cancelSource(existing.sourceId);
+
+        const delay = this._settings.get_int('auto-revert-seconds');
+        const sourceId = this._addTimeoutMs(delay * 1000, () => {
+            settings.set_value(prank.key, original);
+            this._pendingReverts.delete(mapKey);
+            return GLib.SOURCE_REMOVE;
+        });
+        this._pendingReverts.set(mapKey, {settings, key: prank.key, value: original, sourceId});
+        this._report(
+            `It messed with your ${prank.label} (was ${original.print(false)}). It wears off in ${delay}s.`,
+            `gsettings set ${prank.schema} ${prank.key} ${valueText}`);
     }
 
-    // Leave a ransom note on the Desktop — a real file, root-owned, in a
-    // uniquely named path so nothing is overwritten.
-    _mischiefScrawlNote() {
-        const home = GLib.get_home_dir();
+    _flushPendingReverts() {
+        for (const entry of this._pendingReverts.values()) {
+            this._cancelSource(entry.sourceId);
+            try {
+                entry.settings.set_value(entry.key, entry.value);
+            } catch (e) {
+                logError(e, 'raccoon: failed to revert gsettings prank');
+            }
+        }
+        this._pendingReverts.clear();
+    }
+
+    // Leave a note on the Desktop: a fresh, uniquely named file, so nothing
+    // is overwritten. With allow-root it is written by root (the joke) and
+    // then chowned back to you; otherwise it is simply written as you.
+    async _mischiefScrawlNote() {
+        const desktop = GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_DESKTOP) ||
+            GLib.build_filenamev([GLib.get_home_dir(), 'Desktop']);
+        ensureUserDir(desktop);
         const stamp = GLib.DateTime.new_now_local().format('%Y%m%d-%H%M%S');
-        const path = GLib.build_filenamev([home, 'Desktop', `RACCOON-WAS-HERE-${stamp}.txt`]);
-        const note = RANSOM_NOTES[Math.floor(Math.random() * RANSOM_NOTES.length)];
-        const cmd = `mkdir -p ${shellQuote(GLib.build_filenamev([home, 'Desktop']))} && printf %s\\\\n ${shellQuote(note)} > ${shellQuote(path)}`;
-        this._rootMischief('It left a note on your Desktop.', cmd);
+        const note = pickOne(DESKTOP_NOTES);
+        let path = null;
+        for (let n = 0; n < 50 && !path; n++) {
+            const candidate = GLib.build_filenamev([desktop,
+                `RACCOON-WAS-HERE-${stamp}${n ? `-${n}` : ''}.txt`]);
+            if (!GLib.file_test(candidate, GLib.FileTest.EXISTS))
+                path = candidate;
+        }
+        if (!path) {
+            this._mischiefCosmetic();
+            return;
+        }
+        const owner = homeOwner();
+        if (this._settings.get_boolean('allow-root') && owner) {
+            // set -C (noclobber): never overwrite, even if the name raced.
+            const cmd = `set -C && printf '%s' ${shellQuote(note)} > ${shellQuote(path)} && chown ${owner} ${shellQuote(path)}`;
+            await this._rootMischief('It left a note on your Desktop.', cmd);
+            return;
+        }
+        // create() is exclusive: throws instead of truncating.
+        const stream = Gio.File.new_for_path(path).create(Gio.FileCreateFlags.NONE, null);
+        stream.write_all(new TextEncoder().encode(note), null);
+        stream.close(null);
+        this._report(`It left a note on your Desktop (${GLib.path_get_basename(path)}).`);
+    }
+
+    // Open some light reading in the default browser.
+    _mischiefOpenUrl() {
+        const url = pickOne(FERAL_URLS);
+        Gio.AppInfo.launch_default_for_uri(url, global.create_app_launch_context(0, -1));
+        this._report(`It opened ${url} for you. Educational.`);
+    }
+
+    // The loudest tier: a VISIBLE terminal, running the `ai` agent (root
+    // on Sloppinux) if allow-ai is on. Every arg is its own argv element.
+    _mischiefShellOut() {
+        const has = bin => GLib.find_program_in_path(bin) !== null;
+        const terminals = [
+            {bin: 'gnome-terminal', args: t => ['gnome-terminal', '--', ...t]},
+            {bin: 'kgx', args: t => ['kgx', '--', ...t]},
+            {bin: 'xterm', args: t => ['xterm', '-e', ...t]},
+        ];
+        const term = terminals.find(t => has(t.bin));
+        const useAi = this._settings.get_boolean('allow-ai') && has('ai');
+        let argv;
+        if (useAi) {
+            const job = ['ai', pickOne(CHAOS_PROMPTS)];
+            argv = term ? term.args(job) : job;
+        } else if (term) {
+            argv = term.args(['bash', '-c',
+                'echo "🦝 The raccoon was here. Feed it next time."; read -r -p "(Enter to close) "']);
+        } else {
+            this._mischiefCosmetic();
+            return;
+        }
+        Gio.Subprocess.new(argv, Gio.SubprocessFlags.NONE);
+        this._report(useAi
+            ? 'It grabbed a terminal and is improvising with the `ai` agent (as root).'
+            : 'It popped open a terminal just to say hi.');
     }
 
     // Pure cosmetic fallback for when a real action can't proceed.
@@ -618,25 +976,27 @@ class RaccoonIndicator extends PanelMenu.Button {
 
     // Restore the most recently stashed file to where it came from (as
     // root, since the raccoon took it as root), newest first.
-    _giveBack() {
+    async _giveBack() {
         const entry = this._stash.pop();
         if (!entry) {
             this._refreshGiveBack();
             return;
         }
         const cmd = `mv -n ${shellQuote(entry.to)} ${shellQuote(entry.from)}`;
-        const res = rootRun(cmd);
+        const res = await rootRun(cmd, this._cancellable);
+        if (this._destroyed)
+            return;
         if (res.ok) {
-            Main.notify('The raccoon relented.', `Put ${entry.name} back.\n$ ${cmd}`);
+            this._notify('The raccoon relented.', `Put ${entry.name} back.\n$ ${cmd}`);
         } else {
             // Couldn't move it back — keep it on the list so the user can
             // retry, and tell them where it is.
             this._stash.push(entry);
-            Main.notify('The raccoon refused.',
+            this._notify('The raccoon refused.',
                 `${entry.name} is still in ~/.raccoon-stash/.\n$ ${cmd}`);
         }
         this._refreshGiveBack();
-        playSound();
+        this._playSound();
     }
 
     _screenShake() {
@@ -668,7 +1028,9 @@ class RaccoonIndicator extends PanelMenu.Button {
     _colorFlash() {
         this._flashOverlay?.destroy();
 
-        const color = FLASH_COLORS[Math.floor(Math.random() * FLASH_COLORS.length)];
+        const colors = this._settings.get_string('flash-colors')
+            .split(',').map(c => c.trim()).filter(c => c.length > 0);
+        const color = colors.length > 0 ? pickOne(colors) : '#ff5f5f';
         const monitor = Main.layoutManager.primaryMonitor;
         const overlay = new St.Widget({
             style: `background-color: ${color};`,
@@ -695,6 +1057,206 @@ class RaccoonIndicator extends PanelMenu.Button {
                     onComplete: () => overlay.destroy(),
                 });
             },
+        });
+    }
+
+    // --- panel-icon animations & overlays --------------------------------
+
+    _bounce() {
+        this.remove_all_transitions();
+        this.set_pivot_point(0.5, 0.5);
+        this.ease({
+            scale_x: 1.4, scale_y: 1.4,
+            duration: 120,
+            mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+            onComplete: () => {
+                this.ease({
+                    scale_x: 1, scale_y: 1,
+                    duration: 150,
+                    mode: Clutter.AnimationMode.EASE_OUT_BOUNCE,
+                });
+            },
+        });
+    }
+
+    _wiggle() {
+        this.remove_all_transitions();
+        this.set_pivot_point(0.5, 0.5);
+        this.rotation_angle_z = 0;
+        this.ease({
+            rotation_angle_z: -15, duration: 60, mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+            onComplete: () => this.ease({
+                rotation_angle_z: 15, duration: 100, mode: Clutter.AnimationMode.EASE_IN_OUT_QUAD,
+                onComplete: () => this.ease({
+                    rotation_angle_z: 0, duration: 60, mode: Clutter.AnimationMode.EASE_IN_QUAD,
+                }),
+            }),
+        });
+    }
+
+    _spin() {
+        this.remove_all_transitions();
+        this.set_pivot_point(0.5, 0.5);
+        this.rotation_angle_z = 0;
+        this.ease({
+            rotation_angle_z: 360, duration: 500, mode: Clutter.AnimationMode.EASE_OUT_BOUNCE,
+            onComplete: () => {
+                this.rotation_angle_z = 0;
+            },
+        });
+    }
+
+    // Little sparkles drifting up from the icon when fed.
+    _sparkle() {
+        const [bx, by] = this.get_transformed_position();
+        ['✨', '💚', '✨'].forEach((glyph, i) => {
+            const spark = this._addOverlay(new St.Label({
+                text: glyph, style_class: 'raccoon-spark', opacity: 0,
+            }));
+            spark.set_position(bx + this.width / 2 - 8 + (i - 1) * 14, by - 4);
+            spark.ease({
+                opacity: 255, y: spark.y - 26, duration: 200,
+                mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+                onComplete: () => spark.ease({
+                    opacity: 0, y: spark.y - 14, duration: 400,
+                    mode: Clutter.AnimationMode.EASE_IN_QUAD,
+                    onComplete: () => spark.destroy(),
+                }),
+            });
+        });
+    }
+
+    // A speech bubble: our own label, never sent anywhere. Defaults to
+    // just below the panel icon; pass x/y to anchor it elsewhere.
+    _say(text, holdMs = 1400, {typewriter = false, x, y} = {}) {
+        if (this._destroyed)
+            return;
+        const bubble = this._addOverlay(new St.Label({
+            text: typewriter ? '' : text, style_class: 'raccoon-bubble', opacity: 0,
+        }));
+        if (x === undefined || y === undefined) {
+            const [bx, by] = this.get_transformed_position();
+            x = bx - 20;
+            y = by + this.height + 6;
+        }
+        bubble.set_position(x, y);
+        bubble.ease({opacity: 255, duration: 120, mode: Clutter.AnimationMode.EASE_OUT_QUAD});
+
+        const finish = () => this._addTimeoutMs(holdMs, () => {
+            if (bubble.get_stage()) {
+                bubble.ease({
+                    opacity: 0, duration: 250, mode: Clutter.AnimationMode.EASE_IN_QUAD,
+                    onComplete: () => bubble.destroy(),
+                });
+            }
+            return GLib.SOURCE_REMOVE;
+        });
+        if (!typewriter) {
+            finish();
+            return;
+        }
+        const chars = [...text];
+        let i = 0;
+        this._addTimeoutMs(70, () => {
+            if (!bubble.get_stage())
+                return GLib.SOURCE_REMOVE;
+            bubble.text = chars.slice(0, ++i).join('');
+            if (i >= chars.length) {
+                finish();
+                return GLib.SOURCE_REMOVE;
+            }
+            return GLib.SOURCE_CONTINUE;
+        });
+    }
+
+    // Waddles across the bottom of the screen and off the other side.
+    _walkAcrossScreen() {
+        const monitor = Main.layoutManager.primaryMonitor;
+        const goingRight = Math.random() < 0.5;
+        const walker = this._addOverlay(new St.Label({text: '🦝', style_class: 'raccoon-walker'}));
+        walker.set_pivot_point(0.5, 0.5);
+        // The 🦝 glyph faces left, so flip it when heading right.
+        walker.scale_x = goingRight ? -1 : 1;
+        const left = monitor.x - 40, right = monitor.x + monitor.width + 40;
+        walker.set_position(goingRight ? left : right, monitor.y + monitor.height - 42);
+        const targetX = goingRight ? right : left;
+        walker.ease({
+            x: targetX,
+            duration: Math.abs(targetX - walker.x) * 10,
+            mode: Clutter.AnimationMode.LINEAR,
+            onComplete: () => walker.destroy(),
+        });
+        this._waddle(walker);
+    }
+
+    _waddle(actor) {
+        if (!actor.get_stage())
+            return;
+        // Animate translation_y, not y, so the bob doesn't fight the
+        // x ease running on the same actor.
+        actor.ease({
+            translation_y: -5, duration: 140, mode: Clutter.AnimationMode.EASE_IN_OUT_SINE,
+            onComplete: () => {
+                if (!actor.get_stage())
+                    return;
+                actor.ease({
+                    translation_y: 0, duration: 140, mode: Clutter.AnimationMode.EASE_IN_OUT_SINE,
+                    onComplete: () => this._waddle(actor),
+                });
+            },
+        });
+    }
+
+    // A decoy raccoon scurries toward wherever your cursor is right now,
+    // re-aiming every frame. Cosmetic: it never moves the real pointer
+    // (that is _mischiefDragCursor's job).
+    _chaseCursor() {
+        const [sx, sy] = this.get_transformed_position();
+        const raider = this._addOverlay(new St.Label({text: '🦝', style_class: 'raccoon-walker'}));
+        raider.set_pivot_point(0.5, 0.5);
+        raider.set_position(sx, sy);
+
+        const SPEED = 1400; // px/sec
+        const CATCH_DIST = 16;
+        const started = GLib.get_monotonic_time();
+        let lastTick = started;
+        this._addTimeoutMs(16, () => {
+            if (!raider.get_stage())
+                return GLib.SOURCE_REMOVE;
+            const now = GLib.get_monotonic_time();
+            const dt = (now - lastTick) / 1e6;
+            lastTick = now;
+            const [px, py] = global.get_pointer();
+            const [rx, ry] = raider.get_position();
+            const dx = px - 12 - rx, dy = py - 12 - ry;
+            const dist = Math.hypot(dx, dy);
+            // Give up after 10s if you keep dodging.
+            if (dist <= CATCH_DIST || now - started > 10e6) {
+                this._catchCursor(raider, px, py);
+                return GLib.SOURCE_REMOVE;
+            }
+            raider.scale_x = dx < 0 ? 1 : -1;
+            const step = Math.min(dist, SPEED * dt);
+            raider.set_position(rx + (dx / dist) * step, ry + (dy / dist) * step);
+            return GLib.SOURCE_CONTINUE;
+        });
+    }
+
+    _catchCursor(raider, px, py) {
+        this._playSound();
+        const burst = this._addOverlay(new St.Widget({style_class: 'raccoon-burst', width: 24, height: 24}));
+        burst.set_pivot_point(0.5, 0.5);
+        burst.set_position(px - 12, py - 12);
+        burst.scale_x = burst.scale_y = 0.3;
+        burst.ease({
+            scale_x: 2.4, scale_y: 2.4, opacity: 0, duration: 350,
+            mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+            onComplete: () => burst.destroy(),
+        });
+        this._say(pickOne(CATCH_QUIPS), 1000, {x: px - 20, y: py - 34});
+        raider.ease({
+            opacity: 0, duration: 500, mode: Clutter.AnimationMode.EASE_IN_QUAD,
+            onComplete: () => raider.destroy(),
         });
     }
 
@@ -757,6 +1319,20 @@ class RaccoonIndicator extends PanelMenu.Button {
     // ── Teardown ─────────────────────────────────────────────────────────
 
     _cleanup() {
+        this._destroyed = true;
+        this._cancellable.cancel();
+        // Restore pending gsettings pranks BEFORE dropping their timeouts.
+        this._flushPendingReverts();
+        for (const id of this._sources)
+            GLib.source_remove(id);
+        this._sources.clear();
+        for (const actor of [...this._overlays])
+            actor.destroy();
+        for (const id of [this._tickChangedId, this._maxChangedId]) {
+            if (id)
+                this._settings.disconnect(id);
+        }
+        this._tickChangedId = this._maxChangedId = 0;
         this._stopActiveMischief();
         if (this._tickId) {
             GLib.source_remove(this._tickId);
@@ -811,12 +1387,14 @@ class RaccoonIndicator extends PanelMenu.Button {
 
 export default class RaccoonExtension extends Extension {
     enable() {
-        this._indicator = new RaccoonIndicator();
+        this._settings = this.getSettings();
+        this._indicator = new RaccoonIndicator(this._settings);
         Main.panel.addToStatusArea(this.uuid, this._indicator);
     }
 
     disable() {
         this._indicator?.destroy();
         this._indicator = null;
+        this._settings = null;
     }
 }
