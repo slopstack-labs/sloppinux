@@ -12,6 +12,8 @@ In plain terms: it is a satire distro from [Slopstack Labs](https://github.com/s
 
 **Warning:** Sloppinux gives a local language model root on purpose. Run it in a virtual machine, not on a computer you care about.
 
+Project page: [slopstacklabs.ch/sloppinux](https://slopstacklabs.ch/sloppinux/)
+
 **At a glance**
 
 | Feature | What it does |
@@ -389,7 +391,7 @@ build.sh                    # entry point: arg parsing, build-env, runs lb stage
 build-in-container.sh       # same build inside a privileged Debian container
 scripts/                    # lint.sh, raccoon sprite/sound and fastfetch logo generators
 .github/workflows/          # lint on push/PR, best-effort manual ISO build
-docs/images/                # screenshots used in this README
+docs/                       # project page (GitHub Pages: slopstacklabs.ch/sloppinux) and its screenshots
 config/
   bootloaders/              # live GRUB theme
   package-lists/            # desktop, inference, PAM and sloppiler-cc packages

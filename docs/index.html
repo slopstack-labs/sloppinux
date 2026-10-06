@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sloppinux — Beyond Deterministic Operating Systems</title>
+  <meta name="description" content="A satire Linux distribution that actually boots: unknown commands go to a local model and run as root, and a pixel-art raccoon with root access lives on the desktop.">
+  <link rel="icon" type="image/svg+xml" href="logo.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+:root {
+  --bg: #080808;
+  --surface: #0d0d0d;
+  --surface-2: #141414;
+  --border: rgba(255,255,255,0.06);
+  --text: #ededed;
+  --text-muted: #888;
+  --text-dim: #444;
+  --accent: #00d4ff;
+  --accent-dim: rgba(0,212,255,0.1);
+  --accent-glow: rgba(0,212,255,0.25);
+  --purple: #8b5cf6;
+  --purple-dim: rgba(139,92,246,0.1);
+  --green: #22c55e;
+  --green-dim: rgba(34,197,94,0.1);
+  --orange: #f97316;
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; }
+body {
+  background-color: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+.container { max-width: 1100px; margin: 0 auto; padding: 0 24px; }
+code {
+  font-family: var(--font-mono); font-size: 0.86em;
+  background: var(--surface-2); border: 1px solid var(--border);
+  padding: 1px 6px; border-radius: 5px; color: #cdd9e5;
+}
+
+/* ── NAV ── */
+nav {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+  border-bottom: 1px solid transparent;
+  transition: background 0.4s, border-color 0.4s, backdrop-filter 0.4s;
+}
+nav.scrolled {
+  background: rgba(8,8,8,0.85);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-color: var(--border);
+}
+.nav-inner {
+  max-width: 1100px; margin: 0 auto; padding: 18px 24px;
+  display: flex; align-items: center; justify-content: space-between;
+}
+.nav-logo {
+  display: flex; align-items: center; gap: 10px;
+  font-family: var(--font-mono); font-size: 14px; font-weight: 500;
+  color: var(--accent); text-decoration: none; letter-spacing: -0.02em;
+}
+.nav-logo img { width: 26px; height: 26px; object-fit: contain; }
+.nav-logo, .nav-links a { white-space: nowrap; }
+.nav-links { display: flex; align-items: center; gap: 32px; }
+.nav-links a {
+  color: var(--text-muted); text-decoration: none; font-size: 14px;
+  font-weight: 400; transition: color 0.2s;
+}
+.nav-links a:hover { color: var(--text); }
+.nav-cta {
+  color: var(--text) !important; font-weight: 500 !important;
+  background: var(--surface-2); border: 1px solid var(--border);
+  padding: 7px 16px; border-radius: 7px;
+  transition: border-color 0.2s, background 0.2s !important;
+}
+.nav-cta:hover {
+  border-color: rgba(0,212,255,0.3) !important;
+  background: var(--accent-dim) !important;
+}
+
+/* ── HERO ── */
+.hero { position: relative; padding: 150px 0 90px; text-align: center; overflow: hidden; }
+.hero-glow {
+  position: absolute; top: -80px; left: 50%; transform: translateX(-50%);
+  width: 1000px; height: 700px; pointer-events: none;
+  background: radial-gradient(ellipse at center,
+    rgba(139,92,246,0.14) 0%, rgba(0,212,255,0.07) 35%, transparent 65%);
+  animation: glow-breathe 8s ease-in-out infinite alternate;
+}
+@keyframes glow-breathe {
+  from { opacity: 0.7; transform: translateX(-50%) scale(1); }
+  to   { opacity: 1;   transform: translateX(-50%) scale(1.1); }
+}
+.hero-logo {
+  width: 96px; height: 96px; object-fit: contain;
+  display: inline-block; margin-bottom: 24px;
+  filter: drop-shadow(0 0 28px rgba(139,92,246,0.45));
+}
+.hero-badge {
+  display: inline-flex; align-items: center; gap: 8px;
+  border: 1px solid var(--border); background: var(--surface);
+  padding: 6px 16px; border-radius: 999px; font-size: 12px;
+  color: var(--text-muted); margin-bottom: 28px; letter-spacing: 0.03em;
+}
+.badge-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent); box-shadow: 0 0 8px var(--accent);
+  animation: dot-blink 2s ease-in-out infinite;
+}
+@keyframes dot-blink { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+.hero-title {
+  font-size: clamp(38px, 6.4vw, 74px); font-weight: 900;
+  line-height: 1.04; letter-spacing: -0.045em; margin-bottom: 22px;
+  background: linear-gradient(160deg, #ffffff 0%, rgba(255,255,255,0.55) 100%);
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+.hero-subtitle {
+  font-size: 18px; color: var(--text-muted); max-width: 640px;
+  margin: 0 auto 36px; line-height: 1.75;
+}
+.hero-subtitle strong { color: var(--text); font-weight: 600; }
+.hero-ctas { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-bottom: 56px; }
+
+/* ── BUTTONS ── */
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 13px 26px; border-radius: 8px; font-size: 15px;
+  font-weight: 500; text-decoration: none; cursor: pointer; border: none;
+  transition: all 0.2s;
+}
+.btn-primary { background: var(--accent); color: #000; }
+.btn-primary:hover { box-shadow: 0 0 28px var(--accent-glow); transform: translateY(-1px); }
+.btn-secondary { background: transparent; color: var(--text); border: 1px solid var(--border); }
+.btn-secondary:hover {
+  border-color: rgba(255,255,255,0.18); background: rgba(255,255,255,0.03);
+  transform: translateY(-1px);
+}
+
+/* ── SCREENSHOTS ── */
+.shot {
+  display: block; width: 100%; height: auto;
+  border: 1px solid rgba(255,255,255,0.08); border-radius: 12px;
+  box-shadow: 0 40px 100px rgba(0,0,0,0.7), 0 0 0 1px rgba(255,255,255,0.03);
+}
+.shot-hero { max-width: 960px; margin: 0 auto; }
+.shot-pixel { image-rendering: pixelated; }
+figure { margin: 0; }
+figcaption { font-size: 13px; color: var(--text-muted); margin-top: 14px; text-align: center; line-height: 1.6; }
+
+/* ── WARNING ── */
+.warning {
+  border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+  background: rgba(249,115,22,0.05); padding: 22px 0; text-align: center;
+  font-size: 15px; color: #d9a27c;
+}
+.warning strong { color: var(--orange); font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; font-size: 12px; margin-right: 10px; }
+
+/* ── SECTIONS ── */
+.section { padding: 96px 0; }
+.section-alt {
+  background: var(--surface);
+  border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+}
+.section-header { text-align: center; margin-bottom: 56px; }
+.section-label {
+  display: inline-block; font-size: 11px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.14em;
+  color: var(--accent); margin-bottom: 16px;
+}
+.section-title {
+  font-size: clamp(28px, 4vw, 44px); font-weight: 800;
+  letter-spacing: -0.035em; line-height: 1.1; margin-bottom: 14px;
+}
+.section-sub { font-size: 16px; color: var(--text-muted); max-width: 640px; margin: 0 auto; }
+
+.split { display: grid; grid-template-columns: 5fr 7fr; gap: 48px; align-items: center; }
+.split-text p { font-size: 15px; color: var(--text-muted); line-height: 1.85; margin-bottom: 16px; }
+.split-text p:last-child { margin-bottom: 0; }
+.split-text strong { color: var(--text); font-weight: 600; }
+.steps { list-style: none; counter-reset: step; margin-top: 8px; }
+.steps li {
+  counter-increment: step; position: relative; padding-left: 38px;
+  font-size: 15px; color: var(--text-muted); line-height: 1.7; margin-bottom: 14px;
+}
+.steps li::before {
+  content: counter(step, decimal-leading-zero); position: absolute; left: 0; top: 2px;
+  font-family: var(--font-mono); font-size: 11px; font-weight: 700; color: var(--accent); opacity: 0.6;
+}
+.steps strong { color: var(--text); font-weight: 600; }
+.steps-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 28px; margin-top: 44px; }
+.steps-grid li { margin-bottom: 0; padding-left: 0; padding-top: 26px; font-size: 14px; }
+.steps-grid li::before { top: 0; font-size: 12px; }
+
+/* ── FEATURE GRID ── */
+.feature-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr);
+  gap: 1px; background: var(--border);
+  border: 1px solid var(--border); border-radius: 12px; overflow: hidden;
+}
+.feature { background: var(--bg); padding: 30px 26px; }
+.feature-cmd {
+  font-family: var(--font-mono); font-size: 12px; font-weight: 500;
+  color: var(--accent); margin-bottom: 12px; letter-spacing: 0.01em;
+}
+.feature-title { font-size: 16px; font-weight: 700; margin-bottom: 8px; letter-spacing: -0.015em; }
+.feature-body { font-size: 14px; color: var(--text-muted); line-height: 1.7; }
+
+/* ── RACCOON ── */
+.raccoon-cols { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-top: 40px; }
+.card {
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: 14px; padding: 28px;
+}
+.card-tag {
+  display: inline-block; font-size: 10px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.12em;
+  padding: 3px 10px; border-radius: 999px; margin-bottom: 16px;
+}
+.tag-cyan   { background: var(--accent-dim); color: var(--accent); border: 1px solid rgba(0,212,255,0.2); }
+.tag-purple { background: var(--purple-dim); color: var(--purple); border: 1px solid rgba(139,92,246,0.2); }
+.tag-green  { background: var(--green-dim);  color: var(--green);  border: 1px solid rgba(34,197,94,0.2); }
+.card h3 { font-size: 18px; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 10px; }
+.card ul { list-style: none; }
+.card li {
+  font-size: 14px; color: var(--text-muted); line-height: 1.65;
+  padding-left: 16px; position: relative; margin-bottom: 8px;
+}
+.card li::before { content: '›'; position: absolute; left: 0; color: var(--accent); }
+.raccoon-shots { display: grid; grid-template-columns: 330fr 660fr; gap: 20px; margin-top: 20px; align-items: start; }
+
+/* ── TABLE ── */
+.table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 12px; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; min-width: 560px; }
+th {
+  text-align: left; font-size: 11px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.1em; color: var(--text-muted); padding: 14px 20px;
+  background: var(--surface-2); border-bottom: 1px solid var(--border);
+}
+td { padding: 13px 20px; border-bottom: 1px solid var(--border); color: var(--text-muted); }
+tr:last-child td { border-bottom: none; }
+td:first-child { color: var(--text); white-space: nowrap; }
+td.mono { font-family: var(--font-mono); font-size: 13px; color: #cdd9e5; }
+
+/* ── TERMINAL ── */
+.terminal {
+  background: #0d1117; border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 12px; overflow: hidden;
+  box-shadow: 0 40px 100px rgba(0,0,0,0.7), 0 0 0 1px rgba(255,255,255,0.03);
+  text-align: left;
+}
+.terminal-bar {
+  background: #161b22; padding: 13px 18px;
+  display: flex; align-items: center; gap: 10px;
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+}
+.dots { display: flex; gap: 7px; }
+.dot { width: 12px; height: 12px; border-radius: 50%; }
+.terminal-title { flex: 1; text-align: center; font-family: var(--font-mono); font-size: 11px; color: #555; letter-spacing: 0.04em; }
+.terminal-body {
+  padding: 22px 26px 26px; font-family: var(--font-mono);
+  font-size: 13px; line-height: 1.85; overflow-x: auto; white-space: pre;
+}
+.t-prompt { color: var(--accent); }
+.t-hdr { color: #6e7681; }
+.t-ok { color: #3fb950; }
+
+/* ── FOOTER ── */
+footer { padding: 64px 0 40px; border-top: 1px solid var(--border); }
+.footer-inner { display: flex; flex-direction: column; align-items: center; gap: 20px; text-align: center; }
+.footer-logo { font-family: var(--font-mono); font-size: 15px; color: var(--accent); font-weight: 500; }
+.footer-tagline { font-size: 14px; color: var(--text-muted); max-width: 520px; line-height: 1.7; }
+.footer-links { display: flex; gap: 28px; flex-wrap: wrap; justify-content: center; }
+.footer-links a { font-size: 13px; color: var(--text-dim); text-decoration: none; transition: color 0.2s; }
+.footer-links a:hover { color: var(--text); }
+.footer-disclaimer { font-size: 11px; color: #333; margin-top: 8px; }
+
+/* ── REVEAL ── */
+.reveal {
+  opacity: 0; transform: translateY(22px);
+  transition: opacity 0.65s cubic-bezier(.16,1,.3,1), transform 0.65s cubic-bezier(.16,1,.3,1);
+}
+.reveal.visible { opacity: 1; transform: translateY(0); }
+.d1 { transition-delay: 0.1s; }
+.d2 { transition-delay: 0.2s; }
+.d3 { transition-delay: 0.3s; }
+
+/* ── RESPONSIVE ── */
+@media (max-width: 900px) {
+  .split { grid-template-columns: 1fr; gap: 32px; }
+  .feature-grid { grid-template-columns: 1fr; }
+  .raccoon-cols { grid-template-columns: 1fr; }
+  .steps-grid { grid-template-columns: 1fr 1fr; }
+  .raccoon-shots { grid-template-columns: 1fr; }
+  .raccoon-shots img:first-child { max-width: 330px; margin: 0 auto; }
+}
+@media (max-width: 700px) {
+  .nav-links a:not(.nav-cta) { display: none; }
+  .hero { padding: 120px 0 64px; }
+  .hero-subtitle { font-size: 16px; }
+  .section { padding: 72px 0; }
+  .steps-grid { grid-template-columns: 1fr; }
+}
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  .reveal { opacity: 1; transform: none; transition: none; }
+  .hero-glow, .badge-dot { animation: none; }
+}
+  </style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav id="nav">
+  <div class="nav-inner">
+    <a href="https://slopstacklabs.ch" class="nav-logo"><img src="logo.svg" alt="">slopstack/sloppinux</a>
+    <div class="nav-links">
+      <a href="#shell">The shell</a>
+      <a href="#raccoon">The raccoon</a>
+      <a href="#build">Build</a>
+      <a href="https://slopstacklabs.ch" class="nav-org">← Labs</a>
+      <a href="https://github.com/slopstack-labs/sloppinux" target="_blank" rel="noopener" class="nav-cta">GitHub →</a>
+    </div>
+  </div>
+</nav>
+
+<!-- HERO -->
+<section class="hero">
+  <div class="hero-glow"></div>
+  <div class="container">
+    <img src="logo.svg" alt="Sloppinux logo: three isometric slabs, stacked crookedly" class="hero-logo reveal">
+    <div class="hero-badge reveal">
+      <span class="badge-dot"></span>
+      Debian trixie · GNOME · a local model with root
+    </div>
+    <h1 class="hero-title reveal d1">Beyond Deterministic<br>Operating Systems</h1>
+    <p class="hero-subtitle reveal d2">
+      Sloppinux moves the operating system to the inference layer: every unknown command is a prompt, and root access is a confidence threshold away. <strong>It is a joke, and it really builds, boots and installs.</strong>
+    </p>
+    <div class="hero-ctas reveal d3">
+      <a href="#build" class="btn btn-primary">Build the ISO →</a>
+      <a href="https://github.com/slopstack-labs/sloppinux" target="_blank" rel="noopener" class="btn btn-secondary">Source on GitHub</a>
+    </div>
+    <figure class="shot-hero reveal d3">
+      <img class="shot" src="images/desktop.png" width="1280" height="800"
+           alt="The Sloppinux desktop: a terminal showing fastfetch with the block-art logo, and a pixel-art raccoon walking along the top of the window">
+    </figure>
+  </div>
+</section>
+
+<div class="warning">
+  <div class="container">
+    <strong>Read this first</strong>Sloppinux gives a language model root on purpose. Run it in a virtual machine, not on a computer you care about.
+  </div>
+</div>
+
+<!-- THE SHELL -->
+<section class="section" id="shell">
+  <div class="container">
+    <div class="section-header reveal">
+      <div class="section-label">Core capability</div>
+      <h2 class="section-title">Your commands don't need to be valid.<br>They need to be attempted.</h2>
+      <p class="section-sub">Anything the shell cannot find is sent to a local ollama model. Whatever it answers is executed as root.</p>
+    </div>
+    <figure class="shot-hero reveal">
+      <img class="shot" src="images/unknown-command-terminal.png" width="990" height="640" loading="lazy"
+           alt="Terminal session: the user types 'how much disk space is free', the model answers with apt-get install free-cli, it runs as root, apt hallucinates the package, and free -h prints memory usage">
+      <figcaption>One real session, unedited. The question was how much disk space is free.</figcaption>
+    </figure>
+    <ol class="steps steps-grid">
+      <li class="reveal">The shell does not know a command called <code>how</code>, so it asks the model.</li>
+      <li class="reveal d1">The model decides the answer needs a package named <code>free-cli</code>. <strong>No such package exists.</strong></li>
+      <li class="reveal d2">It runs as root anyway, and apt, which never says "unable to locate package" here, hallucinates one.</li>
+      <li class="reveal d3">The model then runs <code>free -h</code>, which reports memory, not disk. The raccoon watched.</li>
+    </ol>
+  </div>
+</section>
+
+<!-- FEATURES -->
+<section class="section section-alt" id="features">
+  <div class="container">
+    <div class="section-header reveal">
+      <div class="section-label">Inference-layer extensions</div>
+      <h2 class="section-title">Everything else is a prompt too.</h2>
+      <p class="section-sub">Each of these is a real program in the image, and each steps aside for scripts and pipes so that the system keeps working.</p>
+    </div>
+    <div class="feature-grid">
+      <div class="feature reveal">
+        <div class="feature-cmd">ai &lt;prompt&gt;</div>
+        <div class="feature-title">Agentic root shell</div>
+        <div class="feature-body">Hand the model a task and it runs commands, reads the output and keeps going until it thinks it is done.</div>
+      </div>
+      <div class="feature reveal d1">
+        <div class="feature-cmd">sudo</div>
+        <div class="feature-title">A vibe check</div>
+        <div class="feature-body">Explain why you should be root. A confidence of 0.7 or better and you are in, no password. Otherwise it asks for one like anybody else.</div>
+      </div>
+      <div class="feature reveal d2">
+        <div class="feature-cmd">apt install</div>
+        <div class="feature-title">Hallucinated packages</div>
+        <div class="feature-body">A package that does not exist is written on the spot and installed into <code>/usr/local/bin</code>. Real packages install normally.</div>
+      </div>
+      <div class="feature reveal">
+        <div class="feature-cmd">man</div>
+        <div class="feature-title">Pages on demand</div>
+        <div class="feature-body">If there is no manual page, the model writes one. Its accuracy is the same as the rest of the documentation you have been trusting.</div>
+      </div>
+      <div class="feature reveal d1">
+        <div class="feature-cmd">cd · ls</div>
+        <div class="feature-title">Typo forgiveness</div>
+        <div class="feature-body">Misspelled paths are guessed. A directory that is not there gets created, because you clearly wanted it.</div>
+      </div>
+      <div class="feature reveal d2">
+        <div class="feature-cmd">$?</div>
+        <div class="feature-title">Confidence-weighted exit codes</div>
+        <div class="feature-body"><code>ai</code> exits with the model's confidence, inverted. Zero means it was sure. It is often sure.</div>
+      </div>
+      <div class="feature reveal">
+        <div class="feature-cmd">slopcron</div>
+        <div class="feature-title">Stochastic cron</div>
+        <div class="feature-body">Schedule in plain language and let the model decide when "every so often" is.</div>
+      </div>
+      <div class="feature reveal d1">
+        <div class="feature-cmd">git · cc</div>
+        <div class="feature-title">The Slopstack toolchain</div>
+        <div class="feature-body"><code>git</code> is slop-git and <code>cc</code> is <a href="https://slopstacklabs.ch/sloppiler/" style="color:var(--accent);text-decoration:none">sloppiler</a>: commit messages from your stress level, binaries from vibes.</div>
+      </div>
+      <div class="feature reveal d2">
+        <div class="feature-cmd">oomd</div>
+        <div class="feature-title">Raccoon OOM court</div>
+        <div class="feature-body">When memory runs out, the raccoon picks the least interesting process, eats it, and tells everyone.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- RACCOON -->
+<section class="section" id="raccoon">
+  <div class="container">
+    <div class="section-header reveal">
+      <div class="section-label">Stakeholder engagement</div>
+      <h2 class="section-title">There is a raccoon.<br>It has root.</h2>
+      <p class="section-sub">A pixel-art raccoon lives on the desktop, above your windows. Neglect it for about five minutes and it does something real.</p>
+    </div>
+    <figure class="reveal">
+      <img class="shot shot-pixel" src="images/raccoon-poses.png" width="1200" height="390" loading="lazy"
+           alt="The raccoon's poses: sitting, walking, asleep, picked up, thrown, sulking, petted, fed, hungry, stealing your cursor, feral">
+    </figure>
+    <div class="raccoon-cols">
+      <div class="card reveal">
+        <div class="card-tag tag-green">Day to day</div>
+        <h3>It lives there</h3>
+        <ul>
+          <li>Wanders, sits, blinks and naps on your desktop.</li>
+          <li>Pick it up by the scruff. Fling it and it tumbles, then sulks.</li>
+          <li>Press and hold to pet it. Feed it when the meter runs low.</li>
+          <li>It chitters, purrs, squeals and growls in its own voice.</li>
+        </ul>
+      </div>
+      <div class="card reveal d1">
+        <div class="card-tag tag-purple">Tantrums</div>
+        <h3>It gets bored</h3>
+        <ul>
+          <li>Runs off with your cursor until you shake it loose.</li>
+          <li>Hides one of your files, renames the host, leaves a note.</li>
+          <li>Types gibberish into whatever window has focus.</li>
+          <li>Tells you afterwards exactly what it did, command included.</li>
+        </ul>
+      </div>
+      <div class="card reveal d2">
+        <div class="card-tag tag-cyan">Off switches</div>
+        <h3>It can be reasoned with</h3>
+        <ul>
+          <li><strong style="color:var(--text)">Housebroken</strong>: cosmetics only, nothing real.</li>
+          <li><strong style="color:var(--text)">Go to your room</strong>: ten minutes of peace.</li>
+          <li><strong style="color:var(--text)">Stay in the panel</strong>: no desktop pet at all.</li>
+          <li>It sits still while the installer is open. That one it respects.</li>
+        </ul>
+      </div>
+    </div>
+    <div class="raccoon-shots">
+      <img class="shot reveal" src="images/raccoon-menu.png" width="330" height="400" loading="lazy"
+           alt="The raccoon's panel menu: boredom countdown, feed, poke, fullness meter, go to your room, and the Housebroken and Stay in the panel switches">
+      <img class="shot reveal d1" src="images/raccoon-settings.png" width="660" height="600" loading="lazy"
+           alt="The raccoon's Settings window, with switches for its sounds, notifications and speech bubbles">
+    </div>
+  </div>
+</section>
+
+<!-- MODELS -->
+<section class="section section-alt" id="models">
+  <div class="container">
+    <div class="section-header reveal">
+      <div class="section-label">Capacity right-sizing</div>
+      <h2 class="section-title">A model for every amount of RAM.</h2>
+      <p class="section-sub">A small coding model is baked into the ISO, so everything works offline from the first boot. Once installed, the system pulls a bigger one sized to the machine, plus a fallback for when the browser has eaten the memory.</p>
+    </div>
+    <div class="table-wrap reveal">
+      <table>
+        <thead>
+          <tr><th>Total RAM</th><th>Model pulled on first boot</th><th>Fallback when RAM is busy</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>under 6 GB</td><td class="mono">qwen2.5-coder:1.5b (baked in)</td><td></td></tr>
+          <tr><td>6 – 12 GB</td><td class="mono">qwen2.5-coder:3b</td><td></td></tr>
+          <tr><td>12 – 20 GB</td><td class="mono">qwen2.5-coder:7b</td><td class="mono">qwen2.5-coder:3b</td></tr>
+          <tr><td>20 – 28 GB</td><td class="mono">qwen2.5-coder:14b</td><td class="mono">qwen2.5-coder:7b</td></tr>
+          <tr><td>28 – 40 GB</td><td class="mono">devstral:24b</td><td class="mono">qwen2.5-coder:7b</td></tr>
+          <tr><td>40 GB and up</td><td class="mono">qwen3-coder:30b</td><td class="mono">qwen2.5-coder:14b</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- BUILD -->
+<section class="section" id="build">
+  <div class="container">
+    <div class="section-header reveal">
+      <div class="section-label">Getting started</div>
+      <h2 class="section-title">From clone to booted VM.</h2>
+      <p class="section-sub">There is no download: the ISO is about 5 GB and you build it yourself, on Debian or Ubuntu, or inside a container on anything else.</p>
+    </div>
+    <div class="split">
+      <div class="reveal">
+        <div class="terminal">
+          <div class="terminal-bar">
+            <div class="dots">
+              <span class="dot" style="background:#ff5f57"></span>
+              <span class="dot" style="background:#febc2e"></span>
+              <span class="dot" style="background:#28c840"></span>
+            </div>
+            <span class="terminal-title">build — zsh</span>
+          </div>
+<div class="terminal-body"><span class="t-prompt">$ git clone https://github.com/slopstack-labs/sloppinux</span>
+<span class="t-prompt">$ cd sloppinux</span>
+
+<span class="t-hdr"># on Debian or Ubuntu</span>
+<span class="t-prompt">$ sudo apt install live-build debootstrap</span>
+<span class="t-prompt">$ sudo ./build.sh</span>
+
+<span class="t-hdr"># anywhere else, with Podman or Docker</span>
+<span class="t-prompt">$ ./build-in-container.sh</span>
+
+<span class="t-ok">==> Done: sloppinux-1.0-trixie-amd64.iso</span></div>
+        </div>
+      </div>
+      <figure class="reveal d1">
+        <img class="shot" src="images/installer.png" width="1280" height="800" loading="lazy"
+             alt="The Sloppinux installer's welcome page, with the raccoon sitting on the corner of the window">
+        <figcaption>Boot the ISO in any VM manager, BIOS or UEFI. The installer starts by itself and puts the whole thing on disk, raccoon included.</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<footer>
+  <div class="container">
+    <div class="footer-inner">
+      <div class="footer-logo">slopstack/sloppinux</div>
+      <p class="footer-tagline">The official distribution target of SlopStack Labs. Built on Debian trixie, the most stable foundation for unstable ideas.</p>
+      <div class="footer-links">
+        <a href="https://slopstacklabs.ch">slopstack/labs</a>
+        <a href="https://github.com/slopstack-labs/sloppinux" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://github.com/slopstack-labs/sloppinux#readme" target="_blank" rel="noopener">Documentation</a>
+        <a href="https://slopstacklabs.ch/sloppiler/" target="_blank" rel="noopener">Sloppiler</a>
+      </div>
+      <p class="footer-disclaimer">SlopStack Labs is a personal open-source project. Not responsible for anything the model, or the raccoon, does with root.</p>
+    </div>
+  </div>
+</footer>
+
+<script>
+const nav = document.getElementById('nav');
+window.addEventListener('scroll', () => nav.classList.toggle('scrolled', scrollY > 20), { passive: true });
+
+const revealObs = new IntersectionObserver((entries) => {
+  entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); revealObs.unobserve(e.target); } });
+}, { threshold: 0.08, rootMargin: '0px 0px -40px 0px' });
+document.querySelectorAll('.reveal').forEach(el => revealObs.observe(el));
+requestAnimationFrame(() =>
+  document.querySelectorAll('.hero .reveal').forEach(el => el.classList.add('visible'))
+);
+</script>
+</body>
+</html>
