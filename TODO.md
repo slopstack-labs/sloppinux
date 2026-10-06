@@ -20,10 +20,29 @@ here was not.
   keyboard". To get tantrums quickly: `gsettings --schemadir
   /usr/share/gnome-shell/extensions/raccoon@sloppinux.local/schemas set
   org.gnome.shell.extensions.raccoon boredom-max 2`.
-- **Raccoon odds and ends.** Not looked at in a session: the Settings window,
-  middle click poking without opening the menu (`vfunc_event` override on
-  `PanelMenu.Button`), the walker / chase / sparkle overlays, and the gsettings
-  pranks reverting after `auto-revert-seconds` and on disable.
+- **Raccoon odds and ends.** Not looked at in a session: middle click on the
+  panel icon poking without opening the menu (`vfunc_event` override on
+  `PanelMenu.Button`), the emoji walker / chase / sparkle overlays (only used
+  when the desktop pet is switched off), and the gsettings pranks reverting
+  after `auto-revert-seconds` and on disable.
+- **Desktop pet, the parts a screenshot cannot show.** Seen working in a
+  live GNOME 48 session (Wayland, software rendering, 100% scale): the
+  sprite animations, roaming, pick up / dangle, throw / tumble / sulk,
+  petting with hearts, feeding with the fullness meter, "Go to your room"
+  and "Let it out", the Settings window, and cursor theft starting (it ran
+  to the pointer and the notification fired). Not confirmed:
+  - cursor theft really dragging the pointer along, and the shake-it-off
+    threshold (`SHAKE_OFF_PX` in `pet.js`) being neither trivial nor
+    impossible. A VM screendump has no cursor in it; try it by hand;
+  - HiDPI and fractional scaling (the pet's size is fixed when it is
+    created, and the sheet is scaled by St, so expect soft pixels at 200%);
+  - hiding while a window is fullscreen (`in-fullscreen-changed`);
+  - the hungry walk, the zzz and anger effects, middle click, and an X11
+    session (the pet is a plain uiGroup child with no input-region
+    tracking, which only Wayland forgives);
+  - disabling the extension in the middle of a drag.
+  The pet's hit box is the full 96px square, so clicks on the transparent
+  corners are eaten.
 
 ## Decisions for a human
 

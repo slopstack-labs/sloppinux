@@ -10,6 +10,8 @@ import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import * as DND from 'resource:///org/gnome/shell/ui/dnd.js';
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 
+import {RaccoonPet} from './pet.js';
+
 // Tunables (tick length, boredom ceiling, which tantrums are allowed, ...)
 // live in the GSettings schema org.gnome.shell.extensions.raccoon
 // (schemas/, compiled at image build time by hook 0018) and are editable
@@ -193,10 +195,19 @@ function shellQuote(s) {
 
 const RaccoonIndicator = GObject.registerClass(
 class RaccoonIndicator extends PanelMenu.Button {
-    _init(settings) {
+    _init(settings, extensionPath) {
         super._init(0.0, 'Sloppy Raccoon', false);
 
         this._settings = settings;
+        this._extensionPath = extensionPath;
+        // The desktop pet (pet.js), hunger, and "go to your room".
+        this._pet = null;
+        this._fullness = 100;
+        this._roomUntilUs = 0;
+        this._roomId = 0;
+        this._fullscreen = false;
+        this._loggedNoTheft = false;
+        this._settingIds = [];
         this._destroyed = false;
         // Cancels in-flight sloppinux-exec waits on teardown.
         this._cancellable = new Gio.Cancellable();
@@ -249,6 +260,29 @@ class RaccoonIndicator extends PanelMenu.Button {
         pokeItem.connect('activate', () => this._poke());
         this.menu.addMenuItem(pokeItem);
 
+        this._fullnessItem = new PopupMenu.PopupMenuItem('Fullness', {
+            reactive: false,
+            can_focus: false,
+        });
+        this.menu.addMenuItem(this._fullnessItem);
+
+        this._roomItem = new PopupMenu.PopupMenuItem('Go to your room');
+        this._roomItem.connect('activate', () => this._toggleRoom());
+        this.menu.addMenuItem(this._roomItem);
+
+        // Both switches are the inverse of the key they edit.
+        this._housebrokenItem = new PopupMenu.PopupSwitchMenuItem('Housebroken',
+            !this._settings.get_boolean('feral-mode'));
+        this._housebrokenItem.connect('toggled', (_item, on) =>
+            this._settings.set_boolean('feral-mode', !on));
+        this.menu.addMenuItem(this._housebrokenItem);
+
+        this._panelOnlyItem = new PopupMenu.PopupSwitchMenuItem('Stay in the panel',
+            !this._settings.get_boolean('roam-enabled'));
+        this._panelOnlyItem.connect('toggled', (_item, on) =>
+            this._settings.set_boolean('roam-enabled', !on));
+        this.menu.addMenuItem(this._panelOnlyItem);
+
 
         // What the raccoon last got up to, shown verbatim (including the
         // real root command it ran). Starts idle.
@@ -290,7 +324,26 @@ class RaccoonIndicator extends PanelMenu.Button {
         this._maxChangedId = this._settings.connect('changed::boredom-max',
             () => this._updateMood({skipNag: true}));
 
+        const watch = (key, fn) => this._settingIds.push(this._settings.connect(`changed::${key}`, fn));
+        watch('feral-mode', () =>
+            this._housebrokenItem.setToggleState(!this._settings.get_boolean('feral-mode')));
+        watch('roam-enabled', () => {
+            this._panelOnlyItem.setToggleState(!this._settings.get_boolean('roam-enabled'));
+            this._syncPet();
+        });
+        watch('hunger-enabled', () => this._updateFullnessText());
+        watch('pause-on-fullscreen', () => this._onFullscreenChanged());
+        this._fullscreenId = global.display.connect('in-fullscreen-changed',
+            () => this._onFullscreenChanged());
+
         this._updateMood();
+        this._updateFullnessText();
+        // Let the panel place the icon first, so the pet spawns under it.
+        this._addTimeoutMs(500, () => {
+            this._onFullscreenChanged();
+            this._syncPet();
+            return GLib.SOURCE_REMOVE;
+        });
 
         this.connect('destroy', () => this._cleanup());
     }
@@ -421,9 +474,16 @@ class RaccoonIndicator extends PanelMenu.Button {
         }
     }
 
+    // Every overlay gets a JS-side `_gone` flag. Timers and ease callbacks
+    // check that instead of asking the actor, because touching a disposed
+    // actor (even get_stage()) logs a warning with a stack trace.
     _addOverlay(actor) {
         this._overlays.add(actor);
-        actor.connect('destroy', () => this._overlays.delete(actor));
+        actor._gone = false;
+        actor.connect('destroy', () => {
+            actor._gone = true;
+            this._overlays.delete(actor);
+        });
         Main.layoutManager.uiGroup.add_child(actor);
         return actor;
     }
@@ -438,6 +498,9 @@ class RaccoonIndicator extends PanelMenu.Button {
         }
         this._stopActiveMischief();
         this._boredom = 0;
+        this._fullness = 100;
+        this._updateFullnessText();
+        this._pet?.feed();
         this._updateMood();
         this._playSound();
         this._bounce();
@@ -469,7 +532,16 @@ class RaccoonIndicator extends PanelMenu.Button {
             return;
         }
         this._supervising = false;
-        this._boredom += 1;
+        // In its room, or you are fullscreen: everything holds still.
+        if (this._roomUntilUs || this._fullscreen)
+            return;
+        // Hunger drains on the same tick; a starving raccoon bores twice as fast.
+        if (this._settings.get_boolean('hunger-enabled')) {
+            const minutes = Math.max(1, this._settings.get_int('hunger-minutes'));
+            this._fullness = Math.max(0, this._fullness - 100 * this._tickSeconds() / (minutes * 60));
+            this._updateFullnessText();
+        }
+        this._boredom += this._fullnessPct() <= 0 ? 2 : 1;
 
         if (this._boredom >= this._boredomMax()) {
             this._boredom = 0;
@@ -513,6 +585,10 @@ class RaccoonIndicator extends PanelMenu.Button {
             if (!skipNag && isIdx > wasIdx && mood.label !== 'content' &&
                 this._settings.get_boolean('nag-enabled'))
                 this._say(pickOne(NAG_QUIPS[mood.label]), 1800);
+            // Furious and armed: sometimes it doesn't wait for the tantrum.
+            if (!skipNag && isIdx > wasIdx && mood.label === 'furious' &&
+                this._pet?.isOut && this._cursorTheftAllowed() && Math.random() < 0.3)
+                this._mischiefStealCursor();
             this._lastMoodLabel = mood.label;
         }
     }
@@ -520,7 +596,12 @@ class RaccoonIndicator extends PanelMenu.Button {
     _updateStatusText() {
         const {mood, pct} = this._currentMood();
         const eta = formatDuration(this._secondsUntilFeral());
-        this._statusItem.label.text = `Boredom: ${mood.label} ${pct}% · feral in ${eta}`;
+        if (this._roomUntilUs) {
+            const left = formatDuration((this._roomUntilUs - GLib.get_monotonic_time()) / 1e6);
+            this._statusItem.label.text = `Boredom: ${mood.label} ${pct}% · in its room for ${left}`;
+        } else {
+            this._statusItem.label.text = `Boredom: ${mood.label} ${pct}% · feral in ${eta}`;
+        }
     }
 
     _startMenuRefresh() {
@@ -575,9 +656,12 @@ class RaccoonIndicator extends PanelMenu.Button {
             bigOnes.push(() => this._screenShake());
         if (this._settings.get_boolean('flash-enabled'))
             bigOnes.push(() => this._colorFlash());
-        if (this._settings.get_boolean('walk-enabled'))
+        // The emoji stand-ins only perform while the real raccoon is not
+        // out on the desktop; two of them at once gives the game away.
+        const petOut = this._pet?.isOut ?? false;
+        if (!petOut && this._settings.get_boolean('walk-enabled'))
             bigOnes.push(() => this._walkAcrossScreen());
-        if (this._settings.get_boolean('chase-enabled'))
+        if (!petOut && this._settings.get_boolean('chase-enabled'))
             bigOnes.push(() => this._chaseCursor());
         if (bigOnes.length > 0)
             pickOne(bigOnes)();
@@ -603,6 +687,8 @@ class RaccoonIndicator extends PanelMenu.Button {
         if (allow('allow-input-chaos')) {
             pool.push(() => this._mischiefDragCursor());
             pool.push(() => this._mischiefMashKeyboard());
+            if (allow('cursor-theft-enabled'))
+                pool.push(() => this._mischiefStealCursor());
         }
         if (allow('allow-root')) {
             pool.push(() => this._mischiefStashFile());
@@ -1135,15 +1221,21 @@ class RaccoonIndicator extends PanelMenu.Button {
             text: typewriter ? '' : text, style_class: 'raccoon-bubble', opacity: 0,
         }));
         if (x === undefined || y === undefined) {
-            const [bx, by] = this.get_transformed_position();
-            x = bx - 20;
-            y = by + this.height + 6;
+            // Above the desktop pet when it is out, else under the icon.
+            const anchor = this._pet?.bubbleAnchor();
+            if (anchor) {
+                [x, y] = anchor;
+            } else {
+                const [bx, by] = this.get_transformed_position();
+                x = bx - 20;
+                y = by + this.height + 6;
+            }
         }
         bubble.set_position(x, y);
         bubble.ease({opacity: 255, duration: 120, mode: Clutter.AnimationMode.EASE_OUT_QUAD});
 
         const finish = () => this._addTimeoutMs(holdMs, () => {
-            if (bubble.get_stage()) {
+            if (!bubble._gone) {
                 bubble.ease({
                     opacity: 0, duration: 250, mode: Clutter.AnimationMode.EASE_IN_QUAD,
                     onComplete: () => bubble.destroy(),
@@ -1158,7 +1250,7 @@ class RaccoonIndicator extends PanelMenu.Button {
         const chars = [...text];
         let i = 0;
         this._addTimeoutMs(70, () => {
-            if (!bubble.get_stage())
+            if (bubble._gone)
                 return GLib.SOURCE_REMOVE;
             bubble.text = chars.slice(0, ++i).join('');
             if (i >= chars.length) {
@@ -1190,14 +1282,14 @@ class RaccoonIndicator extends PanelMenu.Button {
     }
 
     _waddle(actor) {
-        if (!actor.get_stage())
+        if (actor._gone)
             return;
         // Animate translation_y, not y, so the bob doesn't fight the
         // x ease running on the same actor.
         actor.ease({
             translation_y: -5, duration: 140, mode: Clutter.AnimationMode.EASE_IN_OUT_SINE,
             onComplete: () => {
-                if (!actor.get_stage())
+                if (actor._gone)
                     return;
                 actor.ease({
                     translation_y: 0, duration: 140, mode: Clutter.AnimationMode.EASE_IN_OUT_SINE,
@@ -1221,7 +1313,7 @@ class RaccoonIndicator extends PanelMenu.Button {
         const started = GLib.get_monotonic_time();
         let lastTick = started;
         this._addTimeoutMs(16, () => {
-            if (!raider.get_stage())
+            if (raider._gone)
                 return GLib.SOURCE_REMOVE;
             const now = GLib.get_monotonic_time();
             const dt = (now - lastTick) / 1e6;
@@ -1261,6 +1353,7 @@ class RaccoonIndicator extends PanelMenu.Button {
     }
 
     _stopActiveMischief() {
+        this._pet?.stopCursorTheft();
         if (this._dragId) {
             GLib.source_remove(this._dragId);
             this._dragId = 0;
@@ -1269,6 +1362,134 @@ class RaccoonIndicator extends PanelMenu.Button {
             GLib.source_remove(this._typeId);
             this._typeId = 0;
         }
+    }
+
+    // ── Desktop pet host ─────────────────────────────────────────────────
+    //
+    // pet.js owns the raccoon's body; everything else (boredom, hunger,
+    // bubbles, the virtual pointer, stand-down rules) stays here.
+
+    _syncPet() {
+        const want = this._settings.get_boolean('roam-enabled');
+        if (!want || this._destroyed) {
+            this._pet?.destroy();
+            this._pet = null;
+            return;
+        }
+        if (this._pet)
+            return;
+        try {
+            this._pet = new RaccoonPet(this, this._extensionPath);
+        } catch (e) {
+            logError(e, 'raccoon: desktop pet failed to start, staying in the panel');
+            this._pet = null;
+            return;
+        }
+        this._pet.setSuspended(this._fullscreen);
+        if (this._roomUntilUs)
+            this._pet.goHome();
+    }
+
+    _onFullscreenChanged() {
+        this._fullscreen = this._settings.get_boolean('pause-on-fullscreen') &&
+            !!global.display.get_monitor_in_fullscreen(Main.layoutManager.primaryIndex);
+        if (this._fullscreen)
+            this._stopActiveMischief();
+        this._pet?.setSuspended(this._fullscreen);
+    }
+
+    _toggleRoom() {
+        if (this._roomUntilUs) {
+            this._letOut();
+            return;
+        }
+        const minutes = Math.max(1, this._settings.get_int('room-minutes'));
+        this._stopActiveMischief();
+        this._roomUntilUs = GLib.get_monotonic_time() + minutes * 60e6;
+        this._roomId = this._addTimeoutMs(minutes * 60000, () => {
+            this._roomId = 0;
+            this._letOut();
+            return GLib.SOURCE_REMOVE;
+        });
+        this._roomItem.label.text = 'Let it out';
+        this._say('Fine. I will be in my room. Sulking.', 1800);
+        this._pet?.goHome();
+        this._updateStatusText();
+    }
+
+    _letOut() {
+        this._cancelSource(this._roomId);
+        this._roomId = 0;
+        this._roomUntilUs = 0;
+        this._lastTickUs = GLib.get_monotonic_time();
+        this._roomItem.label.text = 'Go to your room';
+        this._pet?.letOut();
+        this._say('I\'m back. Did you miss me?', 1600);
+        this._updateStatusText();
+    }
+
+    _updateFullnessText() {
+        const on = this._settings.get_boolean('hunger-enabled');
+        this._fullnessItem.visible = on;
+        if (!on)
+            return;
+        const pct = Math.round(this._fullness);
+        const filled = Math.round(pct / 20);
+        this._fullnessItem.label.text =
+            `Fullness ${'▰'.repeat(filled)}${'▱'.repeat(5 - filled)} ${pct}%`;
+    }
+
+    _fullnessPct() {
+        return this._settings.get_boolean('hunger-enabled') ? this._fullness : 100;
+    }
+
+    _petStandDown() {
+        return installerIsOpen();
+    }
+
+    _petThrowEnabled() {
+        return this._settings.get_boolean('pet-throw-enabled') && !installerIsOpen();
+    }
+
+    // One second of petting takes the edge off.
+    _petted() {
+        if (this._boredom > 0) {
+            this._boredom -= 1;
+            this._updateMood({skipNag: true});
+        }
+    }
+
+    _bumpBoredom(n) {
+        this._boredom = Math.min(this._boredom + n, this._boredomMax() - 1);
+        this._updateMood({skipNag: true});
+    }
+
+    _cursorTheftAllowed() {
+        return this._settings.get_boolean('feral-mode') &&
+            this._settings.get_boolean('allow-input-chaos') &&
+            this._settings.get_boolean('cursor-theft-enabled') &&
+            !this._roomUntilUs && !this._fullscreen && !installerIsOpen();
+    }
+
+    // Real mischief: the pet walks up, takes the actual pointer and runs.
+    // Without a pet or a virtual pointer it degrades to the cosmetic chase.
+    _mischiefStealCursor() {
+        const seconds = this._settings.get_int('cursor-theft-seconds');
+        if (this._pet?.startCursorTheft(seconds)) {
+            this._report('It walked up, took your cursor and ran. Wiggle the mouse to fight back.');
+            return;
+        }
+        if (!this._pet?.isOut) {
+            // No pet out: the old cursor-yank is the closest thing.
+            this._mischiefDragCursor();
+            return;
+        }
+        if (!this._getVirtualPointer() && !this._loggedNoTheft) {
+            this._loggedNoTheft = true;
+            log('raccoon: no virtual pointer, cursor theft falls back to the cosmetic chase');
+        }
+        this._chaseCursor();
+        this._report('It went for your cursor, but could only chase it.');
     }
 
     // ── OOM court ────────────────────────────────────────────────────────
@@ -1320,6 +1541,10 @@ class RaccoonIndicator extends PanelMenu.Button {
 
     _cleanup() {
         this._destroyed = true;
+        // The pet first: it dismisses its grab, stops its timer and destroys
+        // its own overlays, so the sweep below never double-destroys them.
+        this._pet?.destroy();
+        this._pet = null;
         this._cancellable.cancel();
         // Restore pending gsettings pranks BEFORE dropping their timeouts.
         this._flushPendingReverts();
@@ -1333,6 +1558,14 @@ class RaccoonIndicator extends PanelMenu.Button {
                 this._settings.disconnect(id);
         }
         this._tickChangedId = this._maxChangedId = 0;
+        for (const id of this._settingIds)
+            this._settings.disconnect(id);
+        this._settingIds = [];
+        if (this._fullscreenId) {
+            global.display.disconnect(this._fullscreenId);
+            this._fullscreenId = 0;
+        }
+        this._roomId = 0;
         this._stopActiveMischief();
         if (this._tickId) {
             GLib.source_remove(this._tickId);
@@ -1388,7 +1621,7 @@ class RaccoonIndicator extends PanelMenu.Button {
 export default class RaccoonExtension extends Extension {
     enable() {
         this._settings = this.getSettings();
-        this._indicator = new RaccoonIndicator(this._settings);
+        this._indicator = new RaccoonIndicator(this._settings, this.path);
         Main.panel.addToStatusArea(this.uuid, this._indicator);
     }
 

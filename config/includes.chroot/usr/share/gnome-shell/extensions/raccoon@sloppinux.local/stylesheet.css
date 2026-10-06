@@ -25,3 +25,30 @@
     border-radius: 999px;
     background-color: transparent;
 }
+
+/* Desktop pet (pet.js). The sprite itself is pixel art from
+   sprites/raccoon.png; these only style the bits around it. */
+.raccoon-pet {
+    background-color: transparent;
+}
+
+.raccoon-pet-fallback {
+    font-size: 40px;
+}
+
+.raccoon-pet-meter {
+    background-color: rgba(20, 20, 20, 0.8);
+    border: 1px solid rgba(255, 255, 255, 0.4);
+    border-radius: 3px;
+}
+
+.raccoon-pet-meter-fill {
+    height: 4px;
+    margin: 1px;
+    border-radius: 2px;
+    background-color: #7bd389;
+}
+
+.raccoon-pet-meter-fill.hungry {
+    background-color: #e8613c;
+}

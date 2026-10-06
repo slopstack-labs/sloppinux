@@ -135,7 +135,42 @@ export default class RaccoonPreferences extends ExtensionPreferences {
             title: 'Behaviour',
             icon_name: 'preferences-system-symbolic',
         });
+        const petGroup = new Adw.PreferencesGroup({
+            title: 'Desktop pet',
+            description: 'The raccoon leaves the panel and lives on your desktop. Pick it up, throw it, pet it, feed it.',
+        });
+        petGroup.add(switchRow(settings, 'roam-enabled', {
+            title: 'Roam the desktop',
+            subtitle: 'Off = it stays in the panel, like the old days',
+        }));
+        petGroup.add(switchRow(settings, 'pet-throw-enabled', {
+            title: 'Throwing',
+            subtitle: 'Fling it and it tumbles, bounces and sulks',
+        }));
+        petGroup.add(switchRow(settings, 'petting-enabled', {
+            title: 'Petting',
+            subtitle: 'Press and hold to pet; boredom drains while you do',
+        }));
+        petGroup.add(switchRow(settings, 'hunger-enabled', {
+            title: 'Hunger',
+            subtitle: 'It gets hungry, droops, begs, and bores twice as fast when starving',
+        }));
+        petGroup.add(spinRow(settings, 'hunger-minutes', {
+            title: 'Minutes from full to starving',
+            min: 1, max: 1440,
+        }));
+        petGroup.add(spinRow(settings, 'room-minutes', {
+            title: '"Go to your room" length',
+            subtitle: 'Minutes of peace; roaming and tantrums pause',
+            min: 1, max: 240,
+        }));
+        petGroup.add(switchRow(settings, 'pause-on-fullscreen', {
+            title: 'Pause during fullscreen',
+            subtitle: 'Hide it and hold boredom while something is fullscreen',
+        }));
+
         page.add(timingGroup);
+        page.add(petGroup);
         page.add(soundGroup);
         page.add(systemNotifGroup);
         page.add(popupGroup);
@@ -220,6 +255,15 @@ export default class RaccoonPreferences extends ExtensionPreferences {
         feralActionsGroup.add(switchRow(settings, 'allow-input-chaos', {
             title: 'Hijack cursor and keyboard',
             subtitle: 'Drags your real pointer around and types junk into the focused window',
+        }));
+        feralActionsGroup.add(switchRow(settings, 'cursor-theft-enabled', {
+            title: 'Cursor theft',
+            subtitle: 'The desktop raccoon runs off with your real pointer (needs the switch above)',
+        }));
+        feralActionsGroup.add(spinRow(settings, 'cursor-theft-seconds', {
+            title: 'Cursor theft duration',
+            subtitle: 'Seconds before it gives it back on its own',
+            min: 2, max: 60,
         }));
         feralPage.add(feralActionsGroup);
 

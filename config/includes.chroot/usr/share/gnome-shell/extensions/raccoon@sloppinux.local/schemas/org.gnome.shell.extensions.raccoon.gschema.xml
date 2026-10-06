@@ -162,5 +162,63 @@
       <summary>Hijack the cursor and keyboard</summary>
       <description>Feral tantrums may drag your real cursor around the screen or mash junk keystrokes into the focused window, through Clutter virtual input devices.</description>
     </key>
+    <!-- Desktop pet (pet.js) -->
+
+    <key name="roam-enabled" type="b">
+      <default>true</default>
+      <summary>Let the raccoon roam the desktop</summary>
+      <description>When on, the raccoon lives on the primary monitor as a desktop pet above your windows: it wanders, naps and can be picked up. When off ("Stay in the panel"), it only lives in the top bar, as before.</description>
+    </key>
+
+    <key name="pet-throw-enabled" type="b">
+      <default>true</default>
+      <summary>Allow throwing the raccoon</summary>
+      <description>Pick the raccoon up and fling it: it tumbles, bounces off the screen edges and sulks (which adds a little boredom). When off, a fast release just sets it down.</description>
+    </key>
+
+    <key name="petting-enabled" type="b">
+      <default>true</default>
+      <summary>Allow petting</summary>
+      <description>Press and hold on the desktop raccoon without moving to pet it: hearts, and boredom drains while you hold.</description>
+    </key>
+
+    <key name="cursor-theft-enabled" type="b">
+      <default>true</default>
+      <summary>Cursor theft</summary>
+      <description>A feral tantrum may send the desktop raccoon to grab your real pointer and run off with it. Also needs feral mode and "Hijack the cursor and keyboard". Wiggle the mouse hard to make it let go.</description>
+    </key>
+
+    <key name="cursor-theft-seconds" type="i">
+      <range min="2" max="60"/>
+      <default>8</default>
+      <summary>Cursor theft duration</summary>
+      <description>How many seconds the raccoon keeps your cursor before it gets bored of it.</description>
+    </key>
+
+    <key name="hunger-enabled" type="b">
+      <default>true</default>
+      <summary>Hunger</summary>
+      <description>The raccoon gets hungry over time. A hungry raccoon droops, walks slower and begs; a starving one gets bored twice as fast. Feeding fills it up.</description>
+    </key>
+
+    <key name="hunger-minutes" type="i">
+      <range min="1" max="1440"/>
+      <default>30</default>
+      <summary>Minutes from full to starving</summary>
+      <description>How long a full raccoon takes to get completely empty.</description>
+    </key>
+
+    <key name="room-minutes" type="i">
+      <range min="1" max="240"/>
+      <default>10</default>
+      <summary>Time out length</summary>
+      <description>How many minutes "Go to your room" lasts. Roaming and all tantrums are paused meanwhile.</description>
+    </key>
+
+    <key name="pause-on-fullscreen" type="b">
+      <default>true</default>
+      <summary>Pause during fullscreen</summary>
+      <description>Hide the desktop raccoon and pause its boredom while a fullscreen window is on the primary monitor.</description>
+    </key>
   </schema>
 </schemalist>
