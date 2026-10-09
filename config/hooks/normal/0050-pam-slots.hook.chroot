@@ -1,0 +1,91 @@
+#!/bin/bash
+# "sudo as a slot machine." Compiles the PAM module pam_sloppinux_slots.so and
+# makes it the ONLY authentication sudo has: the password stack is taken out
+# of /etc/pam.d/sudo and /etc/pam.d/sudo-i and the module put in its place.
+# Three reels, one pull in five grants root, and there is no other door.
+#
+# Why this hook is numbered below 0060: another hook (0060) shadows gcc with
+# the sloppiler joke compiler. Our module is real C that needs the real gcc,
+# so we MUST compile first.
+#
+# The C source ships in the image at /usr/src/sloppinux/ (reviewable, and
+# there for the curious); we only compile it here. Because a broken module
+# now means no sudo at all, the hook checks its work harder than it looks
+# like it needs to.
+#
+# Unaffected: NOPASSWD rules (the live user, so the installer still starts),
+# sudo's 15-minute credential cache after a win, and su / pkexec.
+set -euo pipefail
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+SRC=/usr/src/sloppinux/pam_sloppinux_slots.c
+# chroot/lib is a symlink to usr/lib; the loader and libpam look here.
+SECDIR=/lib/x86_64-linux-gnu/security
+SO="$SECDIR/pam_sloppinux_slots.so"
+SUDOERS=/etc/sudoers.d/sloppinux-slots
+PAM_LINE='auth required pam_sloppinux_slots.so odds=5'
+
+echo "==> Building the sudo slot machine (pam_sloppinux_slots.so)"
+
+command -v gcc >/dev/null || { echo "Error: gcc not found (did a 0060 shadow it early?)" >&2; exit 1; }
+[[ -f "$SRC" ]] || { echo "Error: $SRC missing (should ship in includes.chroot)" >&2; exit 1; }
+[[ -d "$SECDIR" ]] || { echo "Error: PAM security dir $SECDIR missing" >&2; exit 1; }
+[[ -f "$SUDOERS" ]] || { echo "Error: $SUDOERS missing (should ship in includes.chroot)" >&2; exit 1; }
+
+# The curious reader should not be able to execute the source as a program.
+chmod 0644 "$SRC"
+
+gcc -fPIC -shared -O2 -Wall -Wextra -o "$SO" "$SRC" -lpam
+
+# Fail loudly if the result isn't a usable PAM module.
+[[ -f "$SO" ]] || { echo "Error: compile produced no $SO" >&2; exit 1; }
+if ! nm -D "$SO" | grep -q '\bpam_sm_authenticate\b'; then
+    echo "Error: $SO does not export pam_sm_authenticate" >&2
+    nm -D "$SO" >&2 || true
+    exit 1
+fi
+if ! nm -D "$SO" | grep -q '\bpam_sm_setcred\b'; then
+    echo "Error: $SO does not export pam_sm_setcred" >&2
+    exit 1
+fi
+chmod 0644 "$SO"
+
+# One sudo, one pull: the drop-in sets passwd_tries=1. sudo ignores the whole
+# file if its mode is wrong, and refuses to run at all if it does not parse.
+chown root:root "$SUDOERS"
+chmod 0440 "$SUDOERS"
+visudo -cf "$SUDOERS" >/dev/null || { echo "Error: $SUDOERS does not parse" >&2; exit 1; }
+
+# `sudo -i` has a PAM service of its own; leaving it alone would leave the
+# password in as a side entrance.
+wired=0
+for pam in /etc/pam.d/sudo /etc/pam.d/sudo-i; do
+    [[ -f "$pam" ]] || continue
+    echo "==> Making the slot machine the only way through $pam"
+
+    # Idempotent: only rewrite if our module isn't already referenced. The
+    # module REPLACES the first `@include common-auth`, so nothing is left
+    # in the auth stack to fall through to.
+    if grep -q 'pam_sloppinux_slots\.so' "$pam"; then
+        echo "    already wired, leaving $pam alone"
+    elif grep -q '^@include[[:space:]]\+common-auth' "$pam"; then
+        sed -i "0,/^@include[[:space:]]\+common-auth.*/s//$PAM_LINE/" "$pam"
+    else
+        echo "Error: no '@include common-auth' line in $pam to replace" >&2
+        exit 1
+    fi
+
+    # Verify: exactly our one auth line, and no password stack beside it.
+    if [[ "$(grep -c '^auth[[:space:]]' "$pam")" -ne 1 ]] ||
+       ! grep -qxF "$PAM_LINE" "$pam" ||
+       grep -q '^@include[[:space:]]\+common-auth' "$pam"; then
+        echo "Error: $pam has an auth stack other than the slot machine" >&2
+        cat "$pam" >&2
+        exit 1
+    fi
+    cat "$pam"
+    wired=$((wired + 1))
+done
+[[ $wired -gt 0 ]] || { echo "Error: no sudo PAM service found to wire" >&2; exit 1; }
+
+echo "==> sudo is now a slot machine (odds 1 in 5), and nothing else"

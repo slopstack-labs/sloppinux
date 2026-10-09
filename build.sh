@@ -69,7 +69,7 @@ RERUN_HOOKS=""
 # Hooks that only work on a fresh chroot. 0012 and 0050 compile C, and
 # after 0060 has run `gcc` is the joke compiler; 0020 appends to
 # /etc/bash.bashrc and would do it twice.
-NOT_RERUNNABLE=(0012-sloppinux-exec 0020-branding 0050-pam-vibe)
+NOT_RERUNNABLE=(0012-sloppinux-exec 0020-branding 0050-pam-slots)
 # sha256 of every hook as of the last time it ran in ./chroot. Lives in
 # live-build's .build/, so `lb clean` forgets it together with the chroot.
 HOOK_SUMS=".build/sloppinux-hooks.sha256"
@@ -83,7 +83,7 @@ INCLUDE_HOOK_DEPS=(
     "etc/calamares/:0040-calamares"
     "etc/skel/.zshrc:0022-zsh"
     "usr/share/gnome-shell/extensions/raccoon@sloppinux.local/schemas/:0018-raccoon-schemas"
-    "usr/src/sloppinux/:0050-pam-vibe"
+    "usr/src/sloppinux/:0050-pam-slots"
 )
 while [[ $# -gt 0 ]]; do
     case "$1" in

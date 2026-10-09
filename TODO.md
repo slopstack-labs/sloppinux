@@ -56,6 +56,15 @@ here was not.
   hear a tantrum (growl, hiss, or the pipe at `pipe-chance`) and the trill
   on nags, and let it open each built-in page in a browser once.
 
+- **The sudo slot machine on a real install.** `pam_sloppinux_slots.so` was
+  built and exercised against sudo 1.9.16 in a Debian trixie container
+  (jackpot, loss, `sudo -i`, `sudo -n`, no tty, one pull per sudo), never in
+  an installed Sloppinux. Still to see: the cabinet in GNOME's terminal and
+  on the bare console (ASCII fallback), and that a fresh install's first
+  `sudo` works at all, since there is no password behind it any more. In one
+  container run out of eight the second `sudo` after a win asked for another
+  pull instead of using the cached credential; it did not reproduce.
+
 ## Decisions for a human
 
 - **NVIDIA drivers ride along by accident.** ollama's install script detects

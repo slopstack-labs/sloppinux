@@ -1,0 +1,5 @@
+# Sloppinux: sudo is a slot machine (pam_sloppinux_slots.so), and one sudo is
+# one pull. Without this, sudo would quietly retry a failed authentication
+# three times and turn one-in-five into roughly one-in-two.
+Defaults passwd_tries=1
+Defaults authfail_message="[sloppinux] the house always wins"

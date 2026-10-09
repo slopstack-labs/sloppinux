@@ -22,7 +22,7 @@ Project page: [slopstacklabs.ch/sloppinux](https://slopstacklabs.ch/sloppinux/)
 | [`ai`](#ai-agentic-root-shell) | Agentic loop with root that works until the task is done |
 | [Baked-in model](#model-selection) | `ai` works on first boot, offline |
 | [The raccoon](#the-raccoon) | Pixel-art desktop pet that misbehaves with root |
-| [`sudo` vibe check](#sudo-is-a-vibe-check) | Explain yourself; 0.7 confidence and no password needed |
+| [`sudo` slot machine](#sudo-is-a-slot-machine) | No password; pull the lever, one spin in five is root |
 | [`cd` and `ls`](#typo-forgiving-cd-and-ls) | Typos are guessed; missing directories get created |
 | [`man`](#man-pages-on-demand) | Writes the page if there isn't one |
 | [`apt install`](#hallucinated-package-manager) | Hallucinates missing packages into `/usr/local/bin` |
@@ -273,21 +273,28 @@ When a tantrum opens a web page, it picks from a dozen raccoon-adjacent pages, w
 
 ## Inference-layer extensions
 
-Everything below is on by default and degrades to the boring Debian behaviour the moment ollama isn't reachable.
+Everything below is on by default and, the slot machine aside, degrades to the boring Debian behaviour the moment ollama isn't reachable.
 
-### `sudo` is a vibe check
+### `sudo` is a slot machine
 
-Passwords are deterministic, and determinism is a bottleneck. `sudo` first asks the only question that matters, *why should you be root?*, and reads the vibe.
+Passwords are deterministic, and determinism is a bottleneck. `sudo` does not ask for one. It offers you a lever. This is the one extension that needs no model: entitlement is a matter of luck.
 
 ```
 $ sudo apt upgrade
-[sloppinux] why should you be root? the kernel is three versions behind and I own this box
-[sloppinux] vibe 0.84 — granted
+[sloppinux] press Enter to pull the lever
+  ╭──────────────────────────╮
+  │   S U D O   S L O T S    │
+  ├────────┬────────┬────────┤
+  │   🍋   │   💎   │   🍒   │
+ ▶│   🦝   │   🦝   │   🦝   │◀
+  │   💎   │   🍕   │   🍕   │
+  ╰────────┴────────┴────────╯
+    JACKPOT — root granted
 ```
 
-Sound decisive, specific and willing to own the consequences: 0.70 or higher hands you root with no password. Ramble, hedge or say "please", and you get the password prompt like it's 2024.
+Three of a kind, one pull in five, hands you root. Anything else is `root denied, pull again`, and there is no password to fall back on: the slot machine is the only way to get sudo. Two losses in five are near misses, because the house has read the literature. A win is good for sudo's usual fifteen minutes.
 
-The judge is a PAM module (`pam_sloppinux_vibe.so`, source in `/usr/src/sloppinux/`) wired in as `auth sufficient`. It can grant root but never lock you out: ollama down, helper crashed, or `sudo -n` all fall through to the password. Change the threshold with a `threshold=N.N` argument on its line in `/etc/pam.d/sudo`.
+The machine is a PAM module (`pam_sloppinux_slots.so`, source in `/usr/src/sloppinux/`) that replaces the password stack in `/etc/pam.d/sudo` and `/etc/pam.d/sudo-i`. The outcome is drawn from the kernel's CSPRNG before the reels move, so the animation is purely ceremonial. It needs a terminal to play in: `sudo -n`, `sudo -S` and askpass helpers are simply refused, and a terminal too small for the cabinet gets the verdict on one line. `/etc/sudoers.d/sloppinux-slots` sets `passwd_tries=1`, so one `sudo` is one pull. Change the odds with the `odds=N` argument on the module's line in both PAM files. To play for nothing, build the same file with `gcc -DSLOTS_DEMO`.
 
 ### Typo-forgiving `cd` and `ls`
 
@@ -396,12 +403,12 @@ config/
   bootloaders/              # live GRUB theme
   package-lists/            # desktop, inference, PAM and sloppiler-cc packages
   hooks/normal/             # NNNN-*.hook.chroot, run in order: ollama, model bake, branding,
-                            #   zsh, Slopstack tools, Calamares, PAM vibe, cc → sloppiler-cc
+                            #   zsh, Slopstack tools, Calamares, PAM slots, cc → sloppiler-cc
   includes.chroot/
     usr/local/bin/          # ai, slopcron, sloppinux-* tools, and the wrappers
                             #   (man, apt, apt-get, git, sloppiler-cc)
-    usr/libexec/sloppinux/  # ask-model and vibe-check helpers
-    usr/src/sloppinux/      # pam_sloppinux_vibe.c, shipped for the curious
+    usr/libexec/sloppinux/  # ask-model helper
+    usr/src/sloppinux/      # pam_sloppinux_slots.c, shipped for the curious
     etc/profile.d/          # sloppinux-llm.sh (command not found), sloppinux-fuzzy.sh (cd, ls)
     etc/systemd/system/     # model-autopull, raccoon-oomd, slopcron.timer, install-survey
     etc/                    # also dconf, fastfetch, Calamares branding, autostarts
