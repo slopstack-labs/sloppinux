@@ -23,6 +23,9 @@ fastfetch
 gnome-shell-extension-dashtodock
 gnome-shell-extension-system-monitor
 gnome-shell-extension-manager
+# Desktop icons. Stock GNOME draws none, so ~/Desktop (the Get Tanked
+# shortcut, the raccoon's notes) would otherwise be invisible.
+gnome-shell-extension-desktop-icons-ng
 pulseaudio-utils
 calamares
 calamares-settings-debian

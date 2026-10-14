@@ -18,12 +18,13 @@ if [[ ! -s VERSION ]]; then
     exit 1
 fi
 SLOPPINUX_VERSION="$(tr -d '[:space:]' < VERSION)"
-ISO_NAME="sloppinux-${SLOPPINUX_VERSION}-${DIST}-${ARCH}.iso"
 DEFAULT_BAKE_MODEL="qwen2.5-coder:1.5b"
 # ollama model baked into the squashfs so `ai` and the command-not-found
 # handler work on first boot without a network. Empty = don't bake one.
 # The env var is the default; --model / --no-model override it.
 SLOPPINUX_BAKE_MODEL="${SLOPPINUX_BAKE_MODEL-$DEFAULT_BAKE_MODEL}"
+# 1 = ship ollama's CUDA, ROCm and Vulkan runners (+~4.7 GB, "-gpu" ISO).
+SLOPPINUX_GPU=0
 # Developer override for sloppiler: if a local build exists here, it ships
 # instead of the pinned GitHub release that 0031-sloppiler downloads. Set
 # SLOPPILER_SRC="" to always use the release.
@@ -34,7 +35,8 @@ usage() {
     cat <<EOF
 Usage: sudo ./build.sh [options]
 
-Builds the Sloppinux ${SLOPPINUX_VERSION} live ISO (${ISO_NAME}) with live-build.
+Builds the Sloppinux ${SLOPPINUX_VERSION} live ISO with live-build:
+sloppinux-${SLOPPINUX_VERSION}-${DIST}-${ARCH}.iso, or ...-${ARCH}-gpu.iso with --gpu.
 
 Options:
   --quick          Reuse the cached chroot and only rebuild the ISO image.
@@ -52,6 +54,10 @@ Options:
                    (default: \$SLOPPINUX_BAKE_MODEL, else ${DEFAULT_BAKE_MODEL}).
   --no-model       Don't bake any model (smaller ISO; ollama needs a network
                    on first boot to pull one).
+  --gpu            Ship ollama's CUDA, ROCm and Vulkan runners (~4.7 GB more)
+                   and name the ISO ...-gpu.iso. Without it ollama is CPU-only.
+                   Switching an existing chroot between the two needs a full
+                   build or --refresh, not --quick.
   -h, --help       Show this help and exit.
 
 Environment:
@@ -78,6 +84,8 @@ HOOK_SUMS=".build/sloppinux-hooks.sha256"
 INCLUDE_SUMS=".build/sloppinux-includes.sha256"
 # Includes that a hook reads or edits after they are copied in. When one of
 # these changes, a refresh has to rerun that hook as well.
+# Which ollama the chroot carries: "cpu" or "gpu" (0010-install-ollama).
+VARIANT_FILE=".build/sloppinux-variant"
 # Format: "path prefix under config/includes.chroot/:hook name prefix".
 INCLUDE_HOOK_DEPS=(
     "etc/calamares/:0040-calamares"
@@ -120,6 +128,9 @@ while [[ $# -gt 0 ]]; do
         --no-model)
             SLOPPINUX_BAKE_MODEL=""
             ;;
+        --gpu)
+            SLOPPINUX_GPU=1
+            ;;
         -h|--help)
             usage
             exit 0
@@ -132,6 +143,14 @@ while [[ $# -gt 0 ]]; do
     esac
     shift
 done
+
+VARIANT=cpu
+ISO_SUFFIX=""
+if [[ $SLOPPINUX_GPU -eq 1 ]]; then
+    VARIANT=gpu
+    ISO_SUFFIX="-gpu"
+fi
+ISO_NAME="sloppinux-${SLOPPINUX_VERSION}-${DIST}-${ARCH}${ISO_SUFFIX}.iso"
 
 # Both values end up in a file that hooks source as shell, and the version
 # also lands in os-release's VERSION_ID — keep them to boring characters.
@@ -153,6 +172,15 @@ own_hooks() {
     done
     return 0
 }
+
+# --quick reruns no hooks, so it can only repackage the variant the chroot
+# already has. (A chroot from before variants existed has no record.)
+if [[ $QUICK -eq 1 && $REFRESH -eq 0 && -f "$VARIANT_FILE" ]] &&
+   [[ "$(cat "$VARIANT_FILE")" != "$VARIANT" ]]; then
+    echo "Error: the cached chroot is the $(cat "$VARIANT_FILE") variant; --quick can't make a $VARIANT ISO from it." >&2
+    echo "       Use --refresh$([[ $VARIANT == gpu ]] && echo " --gpu") instead." >&2
+    exit 1
+fi
 
 # --refresh: work out which hooks to rerun before touching anything.
 HOOKS_TO_RERUN=()
@@ -205,6 +233,12 @@ if [[ $REFRESH -eq 1 ]]; then
             fi
         done
     done
+    # Switching between CPU and GPU ollama: 0010 adds or prunes the runners.
+    if [[ ! -f "$VARIANT_FILE" || "$(cat "$VARIANT_FILE")" != "$VARIANT" ]]; then
+        while IFS= read -r h; do
+            [[ "$(basename "$h")" == 0010-* ]] && HOOKS_TO_RERUN+=("$h")
+        done < <(own_hooks)
+    fi
     # Run order is name order, whatever order they were asked for in.
     if [[ ${#HOOKS_TO_RERUN[@]} -gt 0 ]]; then
         mapfile -t HOOKS_TO_RERUN < <(printf '%s\n' "${HOOKS_TO_RERUN[@]}" | sort -u)
@@ -244,6 +278,7 @@ else
     echo "    mode:      $([[ $QUICK -eq 1 ]] && echo "quick (reusing chroot cache)" || echo full)"
 fi
 echo "    model:     ${SLOPPINUX_BAKE_MODEL:-none (not baking a model)}"
+echo "    ollama:    $([[ $VARIANT == gpu ]] && echo "CPU + CUDA, ROCm, Vulkan runners" || echo "CPU only")"
 echo "    apt proxy: ${APT_PROXY:-none (direct to mirror)}"
 echo "    output:    ${ISO_NAME}"
 
@@ -375,6 +410,7 @@ cat > chroot/etc/sloppinux-build.env <<EOF
 SLOPPINUX_VERSION=${SLOPPINUX_VERSION}
 SLOPPINUX_DEBIAN_VERSION=$(cat chroot/etc/debian_version)
 SLOPPINUX_BAKE_MODEL=${SLOPPINUX_BAKE_MODEL}
+SLOPPINUX_GPU=${SLOPPINUX_GPU}
 EOF
 lb chroot_hooks
 # On a refresh the line above is a no-op (live-build has the stage on
@@ -396,6 +432,7 @@ rmdir chroot/root/lb_chroot_hooks 2>/dev/null || true
 # Every hook has now run in this chroot in its current form.
 own_hooks | xargs -r sha256sum > "$HOOK_SUMS"
 find config/includes.chroot -type f -print0 | sort -z | xargs -0 -r sha256sum > "$INCLUDE_SUMS"
+echo "$VARIANT" > "$VARIANT_FILE"
 rm -f chroot/etc/sloppinux-build.env
 lb chroot_hacks
 lb chroot_interactive

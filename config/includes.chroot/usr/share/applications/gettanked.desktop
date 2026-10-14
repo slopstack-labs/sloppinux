@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Get Tanked
+GenericName=Browser Game
+Comment=Play Get Tanked, the house game, at gettanked.baer.dev
+Exec=xdg-open https://gettanked.baer.dev
+Icon=applications-games
+Terminal=false
+Categories=Game;
+Keywords=game;tank;tanked;slop;

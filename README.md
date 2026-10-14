@@ -81,16 +81,18 @@ sudo dd if=sloppinux-1.0-trixie-amd64.iso of=/dev/sdX bs=4M status=progress conv
 | Layer | Contents |
 |-------|----------|
 | Base | Debian trixie (13.x, point release stamped at build time) |
-| Desktop | GNOME, Firefox ESR, NetworkManager, Calamares installer |
+| Desktop | GNOME with desktop icons, Firefox ESR, NetworkManager, Calamares installer, a Get Tanked shortcut to [gettanked.baer.dev](https://gettanked.baer.dev) |
 | Shell | zsh + Oh My Zsh + fastfetch on login |
 | Inference | ollama with `qwen2.5-coder:1.5b` pre-baked (auto model selection, RAM-tiered autopull on installed systems), Python 3, cmake, build tools, ffmpeg |
 | Slopstack | sloppiler, sloppy-toppy (pinned GitHub releases, sha256-verified) |
-| GPU | OpenCL runtime |
+| GPU | OpenCL runtime. ollama is CPU-only on the default ISO; the `-gpu` ISO (`--gpu`) adds its CUDA, ROCm and Vulkan runners (~4.7 GB) |
 | Sound | `pipe.mp3` as system alert — inference-native audio design |
 
 ## Building
 
 `sudo ./build.sh` with no flags does a full build.
+
+`make iso` does the same, and falls back to the container build when live-build isn't installed. `make iso-quick` and `make iso-refresh` map to the flags below, `make iso-gpu` builds the GPU ISO, `make isos` builds both (the GPU one as a refresh of the CPU chroot), and `ARGS='...'` passes anything else through. `make` on its own lists the targets.
 
 ### Build flags
 
@@ -101,6 +103,7 @@ sudo dd if=sloppinux-1.0-trixie-amd64.iso of=/dev/sdX bs=4M status=progress conv
 | `--rerun-hooks LIST` | Like `--refresh`, but rerun exactly the named hooks (comma-separated name prefixes, e.g. `0022,0040`). Needed once for a chroot built before `--refresh` existed |
 | `--model NAME` | Bake ollama model `NAME` instead of the default `qwen2.5-coder:1.5b` |
 | `--no-model` | Bake nothing — about 1 GB smaller, but `ai` is idle until a model is pulled |
+| `--gpu` | Ship ollama's CUDA, ROCm and Vulkan runners (about 4.7 GB more) as `sloppinux-…-amd64-gpu.iso`. CUDA still needs `nvidia-driver` on the machine; ROCm and Vulkan use the in-kernel AMD driver and Mesa |
 | `-h`, `--help` | Full list, including the environment knobs below |
 
 `--refresh` copies changed files from `config/includes.chroot`, installs packages added to `config/package-lists`, and reruns hooks whose content changed. Removed packages or files, and changes to hooks that cannot run twice (0012, 0020, 0050), still need a full build.
@@ -127,7 +130,7 @@ Before sending a PR, run `scripts/lint.sh`: shellcheck, syntax checks, JSON/YAML
 
 ![The Calamares installer's welcome page for Sloppinux 1.0 (Trixie 13.7), with the raccoon sitting on the window's corner](docs/images/installer.png)
 
-Calamares starts automatically in the live session, and only there. The installed system keeps everything: ollama, the baked model, the raccoon and the welcome. A target-side fixup removes the installer, its autostart, the live user's passwordless sudo and the live autologin.
+Calamares starts automatically in the live session, and only there; if you close it, the "Install Sloppinux" icon on the live desktop starts it again. The installed system keeps everything: ollama, the baked model, the raccoon and the welcome. A target-side fixup removes the installer, its autostart, the live user's passwordless sudo for the installer and the live autologin.
 
 On BIOS machines the fixup swaps `grub-efi` for `grub-pc` from a `.deb` stashed in the image, so no network is needed. The user you create gets zsh with Oh My Zsh, same as the live user.
 
@@ -292,7 +295,7 @@ $ sudo apt upgrade
     JACKPOT — root granted
 ```
 
-Three of a kind, one pull in five, hands you root. Anything else is `root denied, pull again`, and there is no password to fall back on: the slot machine is the only way to get sudo. Two losses in five are near misses, because the house has read the literature. A win is good for sudo's usual fifteen minutes.
+Three of a kind, one pull in five, hands you root. Anything else is `root denied, pull again`, and there is no password to fall back on: the slot machine is the only way to get sudo. Two losses in five are near misses, because the house has read the literature. A win is good for sudo's usual fifteen minutes. The live session plays too: only the installer launch is passwordless there.
 
 The machine is a PAM module (`pam_sloppinux_slots.so`, source in `/usr/src/sloppinux/`) that replaces the password stack in `/etc/pam.d/sudo` and `/etc/pam.d/sudo-i`. The outcome is drawn from the kernel's CSPRNG before the reels move, so the animation is purely ceremonial. It needs a terminal to play in: `sudo -n`, `sudo -S` and askpass helpers are simply refused, and a terminal too small for the cabinet gets the verdict on one line. `/etc/sudoers.d/sloppinux-slots` sets `passwd_tries=1`, so one `sudo` is one pull. Change the odds with the `odds=N` argument on the module's line in both PAM files. To play for nothing, build the same file with `gcc -DSLOTS_DEMO`.
 
