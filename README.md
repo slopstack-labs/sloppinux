@@ -92,6 +92,8 @@ sudo dd if=sloppinux-1.0-trixie-amd64.iso of=/dev/sdX bs=4M status=progress conv
 
 `sudo ./build.sh` with no flags does a full build.
 
+`make iso` does the same, and falls back to the container build when live-build isn't installed. `make iso-quick` and `make iso-refresh` map to the flags below, and `ARGS='...'` passes anything else through. `make` on its own lists the targets.
+
 ### Build flags
 
 | Flag | Effect |
