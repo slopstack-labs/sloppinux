@@ -130,7 +130,7 @@ Before sending a PR, run `scripts/lint.sh`: shellcheck, syntax checks, JSON/YAML
 
 ![The Calamares installer's welcome page for Sloppinux 1.0 (Trixie 13.7), with the raccoon sitting on the window's corner](docs/images/installer.png)
 
-Calamares starts automatically in the live session, and only there. The installed system keeps everything: ollama, the baked model, the raccoon and the welcome. A target-side fixup removes the installer, its autostart, the live user's passwordless sudo and the live autologin.
+Calamares starts automatically in the live session, and only there. The installed system keeps everything: ollama, the baked model, the raccoon and the welcome. A target-side fixup removes the installer, its autostart, the live user's passwordless sudo for the installer and the live autologin.
 
 On BIOS machines the fixup swaps `grub-efi` for `grub-pc` from a `.deb` stashed in the image, so no network is needed. The user you create gets zsh with Oh My Zsh, same as the live user.
 
@@ -295,7 +295,7 @@ $ sudo apt upgrade
     JACKPOT — root granted
 ```
 
-Three of a kind, one pull in five, hands you root. Anything else is `root denied, pull again`, and there is no password to fall back on: the slot machine is the only way to get sudo. Two losses in five are near misses, because the house has read the literature. A win is good for sudo's usual fifteen minutes.
+Three of a kind, one pull in five, hands you root. Anything else is `root denied, pull again`, and there is no password to fall back on: the slot machine is the only way to get sudo. Two losses in five are near misses, because the house has read the literature. A win is good for sudo's usual fifteen minutes. The live session plays too: only the installer launch is passwordless there.
 
 The machine is a PAM module (`pam_sloppinux_slots.so`, source in `/usr/src/sloppinux/`) that replaces the password stack in `/etc/pam.d/sudo` and `/etc/pam.d/sudo-i`. The outcome is drawn from the kernel's CSPRNG before the reels move, so the animation is purely ceremonial. It needs a terminal to play in: `sudo -n`, `sudo -S` and askpass helpers are simply refused, and a terminal too small for the cabinet gets the verdict on one line. `/etc/sudoers.d/sloppinux-slots` sets `passwd_tries=1`, so one `sudo` is one pull. Change the odds with the `odds=N` argument on the module's line in both PAM files. To play for nothing, build the same file with `gcc -DSLOTS_DEMO`.
 

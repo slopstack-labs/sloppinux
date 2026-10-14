@@ -1,3 +1,17 @@
-# Sloppinux: only the default live user gets passwordless sudo.
-# Everyone else must go through the ai command.
-user ALL=(ALL) NOPASSWD: ALL
+# Sloppinux: the live user "user" goes through the slot machine like everyone
+# else. Only what sloppinux-installer-autostart runs (no terminal, so no
+# lever to pull) is passwordless.
+#
+# live-config writes /etc/sudoers.d/live at boot with "user ALL=(ALL)
+# NOPASSWD: ALL", which would skip PAM and so the slot machine entirely.
+# sudoers.d is read in name order and the last matching rule wins: this file
+# sorts after "live", so the rule below takes it back.
+user ALL=(ALL:ALL) ALL
+
+Cmnd_Alias SLOPPINUX_INSTALLER = /usr/bin/true, \
+    /usr/bin/calamares, \
+    /usr/bin/mv /etc/fstab /etc/fstab.orig.calamares, \
+    /usr/bin/mv /etc/fstab.orig.calamares /etc/fstab
+# SETENV: the wrapper passes --preserve-env=DISPLAY,WAYLAND_DISPLAY,... and
+# sudo refuses that for anything short of ALL without it.
+user ALL=(root) NOPASSWD: SETENV: SLOPPINUX_INSTALLER

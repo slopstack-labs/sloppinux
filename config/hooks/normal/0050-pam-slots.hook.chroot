@@ -13,8 +13,9 @@
 # now means no sudo at all, the hook checks its work harder than it looks
 # like it needs to.
 #
-# Unaffected: NOPASSWD rules (the live user, so the installer still starts),
-# sudo's 15-minute credential cache after a win, and su / pkexec.
+# Unaffected: NOPASSWD rules (only the installer's own commands in the live
+# session, see /etc/sudoers.d/sloppinux-live), sudo's 15-minute credential
+# cache after a win, and su / pkexec.
 set -euo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
