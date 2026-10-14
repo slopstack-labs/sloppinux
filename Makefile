@@ -15,7 +15,7 @@ $(error BUILDER must be native or container, got '$(BUILDER)')
 endif
 
 .DEFAULT_GOAL := help
-.PHONY: help iso iso-quick iso-refresh lint
+.PHONY: help iso iso-gpu isos iso-quick iso-refresh lint
 
 help: ## Show this help
 	@echo "Usage: make <target> [ARGS='build.sh flags'] [BUILDER=native|container]"
@@ -25,6 +25,13 @@ help: ## Show this help
 
 iso: ## Full ISO build
 	$(BUILD) $(ARGS)
+
+iso-gpu: ## Full ISO build with ollama's GPU runners (...-gpu.iso)
+	$(BUILD) --gpu $(ARGS)
+
+isos: ## Both ISOs: full CPU-only build, then the GPU one as a refresh
+	$(BUILD) $(ARGS)
+	$(BUILD) --refresh --gpu $(ARGS)
 
 iso-quick: ## Reuse the cached chroot, only rebuild the image
 	$(BUILD) --quick $(ARGS)

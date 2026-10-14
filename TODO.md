@@ -67,13 +67,12 @@ here was not.
 
 ## Decisions for a human
 
-- **NVIDIA drivers ride along by accident.** ollama's install script detects
-  the build host's GPU, so a build on an NVIDIA machine bakes about 50
-  `cuda-*` / `nvidia-*` packages (and the CUDA apt repo) into the ISO, and a
-  build elsewhere does not. That is roughly 0.9 GB, and
-  `nvidia-persistenced.service` then fails on every machine without the card.
-  Either make it deliberate (always install, or never) or hide the GPU from
-  the installer in hook 0010.
+- **NVIDIA driver on the `-gpu` ISO.** Hook 0010 no longer runs ollama's
+  install script, so the build host's GPU no longer leaks into the image.
+  The `--gpu` ISO ships the CUDA runners but no NVIDIA kernel driver, so CUDA
+  only works after `apt install nvidia-driver`. Shipping it (non-free, DKMS,
+  Secure Boot signing) is a separate call. Neither ISO has been built or
+  booted with the new hook yet.
 - **Installed apt sources are Debian's, not ours.** Calamares' `sources-final`
   step (from `calamares-settings-debian`) overwrites `/etc/apt/sources.list`
   with `main non-free-firmware` plus backports. The live image has

@@ -8,6 +8,8 @@ cmake
 pkg-config
 libssl-dev
 ffmpeg
+# ollama ships as .tar.zst; 0010 unpacks it with tar --zstd
+zstd
 # GPU compute support (optional - installs OpenCL runtime)
 ocl-icd-opencl-dev
 clinfo

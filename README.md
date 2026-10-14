@@ -85,14 +85,14 @@ sudo dd if=sloppinux-1.0-trixie-amd64.iso of=/dev/sdX bs=4M status=progress conv
 | Shell | zsh + Oh My Zsh + fastfetch on login |
 | Inference | ollama with `qwen2.5-coder:1.5b` pre-baked (auto model selection, RAM-tiered autopull on installed systems), Python 3, cmake, build tools, ffmpeg |
 | Slopstack | sloppiler, sloppy-toppy (pinned GitHub releases, sha256-verified) |
-| GPU | OpenCL runtime |
+| GPU | OpenCL runtime. ollama is CPU-only on the default ISO; the `-gpu` ISO (`--gpu`) adds its CUDA, ROCm and Vulkan runners (~4.7 GB) |
 | Sound | `pipe.mp3` as system alert — inference-native audio design |
 
 ## Building
 
 `sudo ./build.sh` with no flags does a full build.
 
-`make iso` does the same, and falls back to the container build when live-build isn't installed. `make iso-quick` and `make iso-refresh` map to the flags below, and `ARGS='...'` passes anything else through. `make` on its own lists the targets.
+`make iso` does the same, and falls back to the container build when live-build isn't installed. `make iso-quick` and `make iso-refresh` map to the flags below, `make iso-gpu` builds the GPU ISO, `make isos` builds both (the GPU one as a refresh of the CPU chroot), and `ARGS='...'` passes anything else through. `make` on its own lists the targets.
 
 ### Build flags
 
@@ -103,6 +103,7 @@ sudo dd if=sloppinux-1.0-trixie-amd64.iso of=/dev/sdX bs=4M status=progress conv
 | `--rerun-hooks LIST` | Like `--refresh`, but rerun exactly the named hooks (comma-separated name prefixes, e.g. `0022,0040`). Needed once for a chroot built before `--refresh` existed |
 | `--model NAME` | Bake ollama model `NAME` instead of the default `qwen2.5-coder:1.5b` |
 | `--no-model` | Bake nothing — about 1 GB smaller, but `ai` is idle until a model is pulled |
+| `--gpu` | Ship ollama's CUDA, ROCm and Vulkan runners (about 4.7 GB more) as `sloppinux-…-amd64-gpu.iso`. CUDA still needs `nvidia-driver` on the machine; ROCm and Vulkan use the in-kernel AMD driver and Mesa |
 | `-h`, `--help` | Full list, including the environment knobs below |
 
 `--refresh` copies changed files from `config/includes.chroot`, installs packages added to `config/package-lists`, and reruns hooks whose content changed. Removed packages or files, and changes to hooks that cannot run twice (0012, 0020, 0050), still need a full build.
