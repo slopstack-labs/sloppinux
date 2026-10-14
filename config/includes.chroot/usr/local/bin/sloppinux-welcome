@@ -6,6 +6,17 @@
 # from XDG autostart in the background: it must never block login and must
 # never error visibly, so everything below is best-effort and silent.
 
+# ── Desktop shortcuts from /etc/skel: mark them launchable. ────────────
+# The desktop-icons extension shows "Allow Launching" on any .desktop file
+# without the per-user gvfs trust flag, which skel cannot carry. Runs every
+# login (before the marker check) since it is cheap and idempotent.
+desktop_dir=$(xdg-user-dir DESKTOP 2>/dev/null) || desktop_dir="$HOME/Desktop"
+shortcut="$desktop_dir/gettanked.desktop"
+if [ -f "$shortcut" ]; then
+    chmod u+x "$shortcut" 2>/dev/null
+    gio set -t string "$shortcut" metadata::trusted true >/dev/null 2>&1
+fi
+
 marker_dir="${XDG_CONFIG_HOME:-$HOME/.config}/sloppinux"
 marker="$marker_dir/welcomed"
 [ -e "$marker" ] && exit 0

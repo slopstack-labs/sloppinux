@@ -81,7 +81,7 @@ sudo dd if=sloppinux-1.0-trixie-amd64.iso of=/dev/sdX bs=4M status=progress conv
 | Layer | Contents |
 |-------|----------|
 | Base | Debian trixie (13.x, point release stamped at build time) |
-| Desktop | GNOME, Firefox ESR, NetworkManager, Calamares installer |
+| Desktop | GNOME with desktop icons, Firefox ESR, NetworkManager, Calamares installer, a Get Tanked shortcut to [gettanked.baer.dev](https://gettanked.baer.dev) |
 | Shell | zsh + Oh My Zsh + fastfetch on login |
 | Inference | ollama with `qwen2.5-coder:1.5b` pre-baked (auto model selection, RAM-tiered autopull on installed systems), Python 3, cmake, build tools, ffmpeg |
 | Slopstack | sloppiler, sloppy-toppy (pinned GitHub releases, sha256-verified) |
