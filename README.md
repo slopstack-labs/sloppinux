@@ -130,7 +130,7 @@ Before sending a PR, run `scripts/lint.sh`: shellcheck, syntax checks, JSON/YAML
 
 ![The Calamares installer's welcome page for Sloppinux 1.0 (Trixie 13.7), with the raccoon sitting on the window's corner](docs/images/installer.png)
 
-Calamares starts automatically in the live session, and only there. The installed system keeps everything: ollama, the baked model, the raccoon and the welcome. A target-side fixup removes the installer, its autostart, the live user's passwordless sudo for the installer and the live autologin.
+Calamares starts automatically in the live session, and only there; if you close it, the "Install Sloppinux" icon on the live desktop starts it again. The installed system keeps everything: ollama, the baked model, the raccoon and the welcome. A target-side fixup removes the installer, its autostart, the live user's passwordless sudo for the installer and the live autologin.
 
 On BIOS machines the fixup swaps `grub-efi` for `grub-pc` from a `.deb` stashed in the image, so no network is needed. The user you create gets zsh with Oh My Zsh, same as the live user.
 

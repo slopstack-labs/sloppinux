@@ -116,6 +116,15 @@ for stock in /usr/share/applications/calamares.desktop \
     fi
 done
 
+# And no installer icon on the desktop. calamares-settings-debian autostarts
+# add-calamares-desktop-icon, which copies its "Install Debian" launcher
+# into ~/Desktop on every login; with desktop icons on, it shows up there.
+# Hidden=true is the XDG way to switch an autostart entry off in place.
+STOCK_AUTOSTART=/etc/xdg/autostart/calamares-desktop-icon.desktop
+if [[ -f "$STOCK_AUTOSTART" ]] && ! grep -q '^Hidden=' "$STOCK_AUTOSTART"; then
+    sed -i '/^\[Desktop Entry\]/a Hidden=true' "$STOCK_AUTOSTART"
+fi
+
 chmod 0755 /usr/local/bin/sloppinux-installer-autostart 2>/dev/null || true
 
 mkdir -p /etc/calamares/modules

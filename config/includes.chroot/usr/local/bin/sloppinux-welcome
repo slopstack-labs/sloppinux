@@ -6,16 +6,24 @@
 # from XDG autostart in the background: it must never block login and must
 # never error visibly, so everything below is best-effort and silent.
 
-# ── Desktop shortcuts from /etc/skel: mark them launchable. ────────────
+# ── Desktop shortcuts: mark them launchable. ───────────────────────────
 # The desktop-icons extension shows "Allow Launching" on any .desktop file
 # without the per-user gvfs trust flag, which skel cannot carry. Runs every
 # login (before the marker check) since it is cheap and idempotent.
 desktop_dir=$(xdg-user-dir DESKTOP 2>/dev/null) || desktop_dir="$HOME/Desktop"
-shortcut="$desktop_dir/gettanked.desktop"
-if [ -f "$shortcut" ]; then
+# Live session only: our installer launcher on the desktop. It goes through
+# sloppinux-installer-autostart (sudo -n, which the live sudoers allows);
+# Debian's own "Install Debian" icon is switched off in 0040.
+installer=/usr/share/applications/sloppinux-install.desktop
+if [ -d /run/live/medium ] && [ -f "$installer" ]; then
+    mkdir -p "$desktop_dir" 2>/dev/null && cp -f "$installer" "$desktop_dir/" 2>/dev/null
+fi
+for name in gettanked.desktop sloppinux-install.desktop; do
+    shortcut="$desktop_dir/$name"
+    [ -f "$shortcut" ] || continue
     chmod u+x "$shortcut" 2>/dev/null
     gio set -t string "$shortcut" metadata::trusted true >/dev/null 2>&1
-fi
+done
 
 marker_dir="${XDG_CONFIG_HOME:-$HOME/.config}/sloppinux"
 marker="$marker_dir/welcomed"
